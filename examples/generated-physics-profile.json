@@ -1,0 +1,178 @@
+{
+  "schema_version": "1.0",
+  "name": "generated-physics-suite",
+  "cases": [
+    {
+      "id": "advection",
+      "generator": {
+        "id": "convection_diffusion_2d",
+        "parameters": {
+          "nx": 24,
+          "ny": 20,
+          "diffusion": 0.05,
+          "velocity_x": 2,
+          "velocity_y": 1
+        },
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_constant_columns",
+          "parameters": {
+            "first_value": 1,
+            "column_increment": 1
+          },
+          "seed": "0"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "wave",
+      "generator": {
+        "id": "helmholtz_2d",
+        "parameters": {
+          "nx": 24,
+          "ny": 20,
+          "wavenumber": 20
+        },
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_constant_columns",
+          "parameters": {
+            "first_value": 1,
+            "column_increment": 1
+          },
+          "seed": "0"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "triangular-mesh",
+      "generator": {
+        "id": "triangular_fem_poisson",
+        "parameters": {
+          "nx": 24,
+          "ny": 20
+        },
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_constant_columns",
+          "parameters": {
+            "first_value": 1,
+            "column_increment": 1
+          },
+          "seed": "0"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "dc-grid",
+      "generator": {
+        "id": "grid_dc_power_flow",
+        "parameters": {
+          "buses": 200,
+          "reactance": 0.1,
+          "chord_stride": 11
+        },
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_constant_columns",
+          "parameters": {
+            "first_value": 1,
+            "column_increment": 1
+          },
+          "seed": "0"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "ac-grid",
+      "generator": {
+        "id": "grid_ac_jacobian",
+        "parameters": {
+          "buses": 200,
+          "reactance": 0.1,
+          "resistance": 0.02,
+          "chord_stride": 11
+        },
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_constant_columns",
+          "parameters": {
+            "first_value": 1,
+            "column_increment": 1
+          },
+          "seed": "0"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    }
+  ],
+  "solvers": [
+    {
+      "id": "eigen-sparse-lu",
+      "options": {
+        "thread_limit": 1,
+        "relative_tolerance": 1e-10,
+        "absolute_tolerance": 1e-12,
+        "iteration_limit": "10000"
+      }
+    }
+  ],
+  "passes": [
+    {
+      "id": "timing",
+      "instrumentation": {
+        "kind": "baseline",
+        "collectors": []
+      },
+      "warmup_runs": 1,
+      "measured_runs": 3,
+      "case_timeout_seconds": 30
+    },
+    {
+      "id": "phase-resources",
+      "instrumentation": {
+        "kind": "trace",
+        "collectors": [
+          "linux.phase_resources"
+        ]
+      },
+      "warmup_runs": 1,
+      "measured_runs": 2,
+      "case_timeout_seconds": 30
+    }
+  ]
+}

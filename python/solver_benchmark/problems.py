@@ -133,19 +133,28 @@ def generate_case(case, *, max_entries=DEFAULT_MAX_ENTRIES):
         raise ValueError("unsupported encoding")
     generator, parameters = _recipe(case.get("generator"), "generator")
     dimensions = {"laplacian_1d": 1, "laplacian_2d": 2, "laplacian_3d": 3}.get(generator)
-    if dimensions is None:
-        raise ValueError(f"unknown matrix generator: {generator}")
-    axes = "xyz"[:dimensions]
-    keys = tuple("m" + axis for axis in axes) + tuple("d" + axis for axis in axes)
-    _exact_keys(parameters, keys, generator)
-    sizes = [_positive_integer(parameters["m" + axis], "m" + axis) for axis in axes]
-    spacings = [_finite_number(parameters["d" + axis], "d" + axis) for axis in axes]
-    if any(spacing <= 0 for spacing in spacings):
-        raise ValueError("grid spacings must be positive")
-    logical_order = math.prod(sizes)
     factor = 2 if encoding == "complex_interleaved" else 1
-    order = factor * logical_order
-    nonzeros = factor * (logical_order + 2 * sum((size - 1) * (logical_order // size) for size in sizes))
+    if dimensions is None:
+        from .extended_problems import build
+        try:
+            offsets, columns, values, properties = build(generator, parameters, max_entries // factor)
+        except (OverflowError, ZeroDivisionError) as error:
+            raise ValueError("generator arithmetic outside binary64 range") from error
+        logical_order = len(offsets) - 1
+        order = factor * logical_order
+        nonzeros = factor * len(columns)
+    else:
+        axes = "xyz"[:dimensions]
+        keys = tuple("m" + axis for axis in axes) + tuple("d" + axis for axis in axes)
+        _exact_keys(parameters, keys, generator)
+        sizes = [_positive_integer(parameters["m" + axis], "m" + axis) for axis in axes]
+        spacings = [_finite_number(parameters["d" + axis], "d" + axis) for axis in axes]
+        if any(spacing <= 0 for spacing in spacings):
+            raise ValueError("grid spacings must be positive")
+        logical_order = math.prod(sizes)
+        order = factor * logical_order
+        nonzeros = factor * (logical_order + 2 * sum((size - 1) * (logical_order // size) for size in sizes))
+        properties = {"symmetric": "yes", "structurally_symmetric": "yes", "positive_definite": "yes"}
     if order > MAX_INDEX or nonzeros > MAX_OFFSET or order > sys.maxsize:
         raise ValueError("matrix dimensions exceed the wire/address-space limits")
 
@@ -161,7 +170,8 @@ def generate_case(case, *, max_entries=DEFAULT_MAX_ENTRIES):
     if nonzeros > max_entries or dense_count > max_entries or dense_count > sys.maxsize // 8:
         raise ValueError(f"case exceeds local max_entries={max_entries}")
 
-    offsets, columns, values = _laplacian_stencil(sizes, spacings)
+    if dimensions is not None:
+        offsets, columns, values = _laplacian_stencil(sizes, spacings)
     if factor == 2:
         offsets, columns, values = _complex_expand(offsets, columns, values)
     reference, rhs = array("d"), array("d")
@@ -180,7 +190,7 @@ def generate_case(case, *, max_entries=DEFAULT_MAX_ENTRIES):
             rhs.append(value)
     matrix = {
         "order": order, "nonzeros": str(nonzeros), "encoding": encoding,
-        "properties": {"symmetric": "yes", "structurally_symmetric": "yes", "positive_definite": "yes"},
+        "properties": properties,
     }
     if factor == 2:
         matrix["complex_order"] = logical_order
@@ -194,6 +204,6 @@ def generate_case(case, *, max_entries=DEFAULT_MAX_ENTRIES):
         },
         "reference": list(reference),
         "generation": {"implementation_version": GENERATOR_VERSION,
-                       "boundary": "homogeneous_dirichlet_interior", "indexing": "x_fastest",
+                       "boundary": "homogeneous_dirichlet_interior" if dimensions is not None else "generator_specific", "indexing": "x_fastest" if dimensions is not None else "generator_specific",
                        "rhs_arithmetic": "binary64_products_math.fsum_binary64_output"},
     }
