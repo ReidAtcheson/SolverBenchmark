@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import struct
+import signal
 import sys
 import tempfile
 import unittest
@@ -11,8 +12,13 @@ from solver_benchmark.supervisor import run_worker
 
 
 WORKER = r'''
-import json, mmap, os, resource, signal, socket, struct, sys, time
+import ctypes, json, mmap, os, resource, signal, socket, struct, sys, time
 resource.setrlimit(resource.RLIMIT_CORE,(0,0))
+# RLIMIT_CORE is ignored by piped core handlers; avoid host crash-reporting delays.
+libc=ctypes.CDLL(None,use_errno=True)
+libc.prctl.argtypes=[ctypes.c_int]+[ctypes.c_ulong]*4
+if libc.prctl(4,0,0,0,0) != 0: raise OSError(ctypes.get_errno(), 'PR_SET_DUMPABLE')
+if libc.prctl(3,0,0,0,0) != 0: raise RuntimeError('fixture is still dumpable')
 args = dict(arg[2:].split('=',1) for arg in sys.argv[1:])
 s = socket.socket(fileno=int(args['sb-control-fd']))
 mode = os.environ.get('MODE','good')
@@ -123,6 +129,7 @@ class SupervisorTests(unittest.TestCase):
     def test_crash_keeps_partial_progress(self):
         report=self.run_case('late_crash')
         self.assertEqual(report['outcome'],'worker_crashed',report)
+        self.assertEqual(report['process']['terminating_signal'],signal.SIGSEGV)
         self.assertEqual(report['phases'][-1]['phase'],'numeric')
         self.assertFalse(report['phases'][-1]['completed'])
         self.assertGreater(report['process']['max_rss_bytes'],0)
@@ -130,6 +137,7 @@ class SupervisorTests(unittest.TestCase):
     def test_early_crash(self):
         report=self.run_case('crash')
         self.assertEqual(report['outcome'],'worker_crashed',report)
+        self.assertEqual(report['process']['terminating_signal'],signal.SIGABRT)
 
     def test_timeout(self):
         self.request['plan']['case_timeout_seconds']=0.15

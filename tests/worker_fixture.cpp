@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 #include <unistd.h>
+#include <sys/prctl.h>
 
 namespace sb = solver_benchmark;
 namespace {
@@ -68,6 +69,8 @@ public:
 }
 
 int main(int argc, char** argv) {
+    // Test crashes must not wait for a host's piped core-dump service.
+    if (::prctl(PR_SET_DUMPABLE, 0L) != 0 || ::prctl(PR_GET_DUMPABLE) != 0) return 2;
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument(argv[i]);
         if (argument.starts_with("--fixture=")) behavior = argument.substr(10);
