@@ -1,12 +1,27 @@
-# Serializable benchmark profiles — draft 1.0
+# Serializable benchmark profiles — version 1.0
 
 A benchmark profile is a portable JSON experiment recipe. It specifies what to
 generate and measure without embedding generator code, backend libraries, host
 paths, or software versions. The [JSON Schema](../schemas/benchmark-profile.schema.json)
-and [example profile](../examples/benchmark-profile.json) make this draft concrete.
-No generator registry, profile loader, canonicalizer, or execution engine is
-implemented yet. The schema's `.invalid` identifier is a stable draft identifier,
-not a service to contact; validators load the schema from this repository.
+and [example profile](../examples/benchmark-profile.json) define the implemented
+local Linux runner. The schema's `.invalid` identifier is a stable identifier,
+not a service to contact; validators load the packaged schema. Earlier PR drafts
+were not released compatibility contracts.
+
+The installed CLI validates/materializes a profile or executes it with a separate
+deployment mapping:
+
+```sh
+solver-benchmark validate examples/benchmark-profile.json
+solver-benchmark run examples/benchmark-profile.json \
+    --deployment examples/deployment.json --output results/laplacians
+```
+
+`validate` checks the schema, semantic rules, generator parameters, and generated
+inputs, then prints the canonical profile hash. `run` writes a new output directory
+and refuses to overwrite one that exists. `--max-entries` limits each case's CSR
+entry count and dense element count before allocation; its default is 5,000,000.
+This local limit is recorded in the execution record and does not alter the recipe.
 
 ## Recipe and execution
 
@@ -44,31 +59,76 @@ is no parallel execution in the initial profile semantics.
 
 Different RHS widths are distinct cases in this first profile, as the example
 demonstrates. Each trial solves its entire dense block once after factorization;
-this draft does not imply factor reuse across width cases. Future schedules for
+this schedule does not imply factor reuse across width cases. Future schedules for
 repeated solves or numeric refactorization require explicit lifecycle semantics.
 
-`baseline` instrumentation has an empty collector list and records the standard
+`baseline` instrumentation has an empty collector list and records standard
 wall/CPU and process resource metrics. `trace` names one or more required
-collectors; their definitions describe precisely which OS events and phase
-markers to collect. Trace collectors may be implemented with perf, BPF, or other
-platform services. The collector names in the example are proposed registry
-identifiers, not installed tools. Unsupported collectors produce an explicit
-`unsupported_instrumentation` result; they are never silently omitted or treated
-as solver unsupported. A failure does not prevent independent passes from running.
-Failures or lost data after activation are `instrumentation_failed`.
-Baseline timing summaries never combine traced samples with baseline samples.
+collectors. Unsupported collectors produce an explicit `unsupported_instrumentation`
+result; they are never silently omitted or treated as solver unsupported. A failure
+does not prevent independent passes from running. Failures or lost data after
+activation are `instrumentation_failed`. Baseline timing summaries never combine
+traced samples with baseline samples.
 
-The example generator IDs are also proposed, not existing implementations:
+The implemented collectors are:
 
-- `laplacian_1d` produces a full tridiagonal CSR matrix of the specified `order`,
-  with the supplied constant `diagonal` and `off_diagonal` entries.
-- `manufactured_constant_columns` creates parent-only reference column j with
-  every entry equal to `first_value + j * column_increment`, then forms RHS
-  column j by multiplying by the delivered matrix, with binary64 output. A
-  generator implementation must document its accumulation/rounding algorithm.
-- Both examples are deterministic and ignore the seed numerically, but require
-  an explicit seed. Stochastic generators must identify their random algorithm
-  as part of their generator contract and version manifest.
+| Collector | Measurements |
+| --- | --- |
+| `linux.phase_resources` | Worker phase/teardown boundary timestamps, `getrusage` page-fault/context-switch deltas, and procfs RSS/thread-count snapshots. No perf installation is required. |
+| `linux.vm_events` | Optional perf recording of `sys_enter_mmap`, `sys_enter_munmap`, and `sys_enter_brk` tracepoints. |
+| `linux.thread_events` | Optional perf recording of `sched_process_fork`, `sched_process_exit`, and `sched_switch` tracepoints. |
+| `linux.page_faults` | Optional perf recording of the `page-faults` software event. |
+
+The perf collectors require an installed perf with acknowledged control-pipe
+support, matching kernel events, and permission to record them. Availability is
+checked for the requested pass. No BPF collector is implemented. All trace passes
+also receive worker phase observations. Optional perf data and decoded event text
+share `CLOCK_MONOTONIC` with phase intervals and can be correlated offline; the
+runner does not reconstruct allocation lifetimes or produce a merged event timeline.
+
+## Matrix and RHS generators
+
+The three Laplacian generators have strict parameter sets:
+
+| ID | Required parameters |
+| --- | --- |
+| `laplacian_1d` | `mx`, `dx` |
+| `laplacian_2d` | `mx`, `my`, `dx`, `dy` |
+| `laplacian_3d` | `mx`, `my`, `mz`, `dx`, `dy`, `dz` |
+
+Counts are positive integers and represent **interior unknowns**. Spacings are
+positive finite binary64 values whose inverse squares and resulting diagonal
+remain positive/finite. Coordinates are flattened x-fastest: `i + mx*(j + my*k)`.
+The matrix represents the standard centered finite-difference **negative Laplacian**
+with homogeneous Dirichlet boundary values. Each active axis contributes `2/d²`
+to the diagonal and `-1/d²` to each existing neighbor. An absent boundary neighbor
+is eliminated as zero; its diagonal contribution remains, including when an axis
+has only one interior point. The result is full canonical CSR and asserts numerical
+symmetry, structural symmetry, and positive definiteness. It does not advertise
+diagonal dominance.
+
+For example, `mx=3, dx=0.5` gives diagonal 8 and adjacent entries -4. Anisotropic
+2D/3D grids use separate weights for each spacing. The stencil/indexing code can
+be reused for a future Helmholtz shift `-Delta - k²I`; wavenumber, shifts, alternative
+boundary conditions, and indefinite generators are **not accepted yet**. Such a
+generator must revise the positive-definiteness metadata appropriately.
+
+`encoding.kind: complex_interleaved` expands the generated real operator as a
+complex operator with zero imaginary part. It doubles delivered order and stored
+entry count but preserves RHS count. The logical complex order remains the original
+grid size. Native complex matrices with nonzero imaginary coefficients are supported
+by the wire contract, but are not produced by these three generators.
+
+`manufactured_constant_columns` has exactly `first_value` and `column_increment`
+parameters. Parent-only reference column j has every delivered real entry equal to
+`first_value + j * column_increment`; RHS column j is formed by the delivered matrix.
+For complex encoding this sets both the real and imaginary component to that value.
+Products use binary64 arithmetic and each row is accumulated with Python `math.fsum`,
+then stored as binary64. No reference solution is sent to a worker.
+
+All four generators are deterministic and ignore the seed numerically, but require
+an explicit canonical uint64 decimal-string seed. Changing a seed changes the recipe
+hash even when these deterministic generators produce identical input bytes.
 
 ## Validation before execution
 
@@ -123,23 +183,27 @@ The profile contains no self-referential hash. Save the original JSON and its
 canonical bytes alongside the digest. Keep documentation outside the hashed
 object unless intentionally represented by a schema field.
 
-The separate version manifest identifies the actual implementations used:
-generator IDs mapped to source revision/content digest and RNG algorithm version;
-solver IDs mapped to executable digest, adapter/backend versions, compiler and
-runtime dependencies; orchestrator/worker/protocol/schema implementations; and
-trace collector implementations. Pin dependencies or capture enough identity to
-detect differences. Dirty source trees need a content digest, not only a Git SHA.
-Updating an implementation may change this manifest hash while preserving the
-profile hash. That makes version-to-version comparisons of one recipe possible;
-it does not assume the generated bytes stayed unchanged.
+The implemented version manifest records orchestrator Python source-file hashes,
+the packaged profile-schema hash, generator contract ID, Python version, jsonschema
+and RFC8785 package versions, and each worker's `--describe` identity plus executable
+SHA-256. Updating an implementation may change this manifest hash while preserving
+the profile hash. This permits version-to-version comparisons without assuming that
+the generated bytes stayed unchanged.
 
-The resolved execution record separately captures executable paths/arguments,
-effective environment, host/CPU/kernel, affinity/thread policy, collector
-availability/settings, time, and run ID. Any solver or collector configuration
-with behavioral effects must be explicit in the recipe's supported options or in
-this recorded resolution; unrecorded ambient settings are not reproducible. A
-comparison must check this execution record as well as hashes. No credential or
-secret needs to be stored in a public provenance record.
+The separate deployment document has `schema_version: "1.0"` and a `solvers` object
+mapping every requested solver ID to `executable`, `arguments`, and `environment`.
+Executable paths resolve relative to the deployment file; environment is a string
+to string object. The parent inherits its environment, applies these overrides,
+and sets OMP/OpenBLAS/MKL/BLIS thread-count variables from `thread_limit` before launch.
+The adapter still must honor the requested compute-thread limit.
+
+The execution record captures a run UUID, UTC start time, deployment mapping,
+resolved executable paths, local entry limit, host/CPU/kernel/libc information,
+available CPU affinity, and profile/version hashes. Each result records effective
+threading overrides. The current manifest does not enumerate every dynamically
+loaded library or preserve every inherited environment variable; record additional
+external runtime configuration when comparing different machines or deployments.
+No credentials should be placed in the saved deployment environment.
 
 Each materialized case has an `input_hash` that identifies the delivered inputs
 independently of shared-memory addresses, offsets, padding, and software version.
@@ -173,14 +237,39 @@ therefore produce the same input hash. Exact binary64 bits are preserved, so
 positive and negative zero intentionally have different input hashes.
 
 Reference solutions are parent-only and excluded from the worker input hash.
-When supplied, preserve them with a separate reference-artifact digest and the
-verification arithmetic/policy so accuracy results can be reproduced. Record
-each output solution digest separately if retaining result artifacts.
+The current runner saves them as JSON with the input metadata and arrays. Accuracy
+reports identify their arithmetic as binary64 products, `math.fsum` accumulation,
+and scaled L2 norms. Infinite diagnostics use JSON objects such as
+`{"nonfinite":"+inf"}` rather than invalid JSON numeric literals.
 
-The final run record joins `profile_hash`, `version_manifest_hash`, each
-`input_hash`, case/solver/pass IDs, execution metadata, accuracy/timing results,
-and trace artifact digests. A UUID identifies the individual run occurrence;
-identical experiment hashes do not collapse repeated runs into one result.
-Neither timings nor machine-specific details are folded into the profile hash.
-Hashes establish content identity, not trust in a generator's assertions or
-correctness of a solver's answer.
+## Output artifacts and results
+
+The output directory contains:
+
+- `profile.json` and `profile.canonical.json`: parsed recipe and its JCS bytes.
+- `version-manifest.json` and `execution.json`: software identity and run occurrence.
+- `inputs/<case>/`: four little-endian `.bin` arrays, `metadata.json`, and the
+  parent-only `reference.json`, `generation.json`, and `identity.json` (input and
+  reference hashes).
+- `runs/<case>/<solver>/<pass>/result.json`: process resources, raw phase/teardown
+  records, per-RHS validation, outcome, provenance hashes, and accepted measured
+  timing samples. `stdout.log`/`stderr.log` are bounded captured worker logs.
+- `phase-trace.json` for trace passes; perf passes can additionally retain
+  `perf.data`, `perf-events.txt`, and collector/decoder logs.
+- `results.jsonl`: a flushed result per completed execution, retaining prior
+  results if the overall run is interrupted; `summary.json` counts final outcomes.
+
+The run UUID distinguishes repeated executions of identical inputs. Timings and
+machine-specific details are not folded into the profile hash. The current runner
+records output, reference, and trace content digests alongside artifact paths. Hashes establish content identity, not trust in a generator's
+assertions or correctness of a solver's answer.
+
+The CLI exits zero when every execution is successful or explicitly unsupported,
+one when an execution fails, and two for a configuration or orchestration error.
+Inspect outcome counts: a zero exit can include unavailable requested instrumentation.
+
+Deployment solver entries may additionally specify `runtime_dependencies`, an
+object mapping descriptive labels to file paths (resolved against deployment
+JSON). Their SHA-256 hashes enter the software version manifest independently
+of executable hashes. This supports externally linked solver libraries; automatic
+transitive shared-library discovery is not yet performed.

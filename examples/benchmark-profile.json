@@ -1,51 +1,99 @@
 {
   "schema_version": "1.0",
-  "name": "laplacian-rhs-widths",
+  "name": "laplacian-local",
   "cases": [
     {
-      "id": "laplacian-1000-rhs1",
+      "id": "laplacian-1d",
       "generator": {
         "id": "laplacian_1d",
-        "parameters": {"order": 1000, "diagonal": 2, "off_diagonal": -1},
+        "parameters": {
+          "mx": 1000,
+          "dx": 0.01
+        },
         "seed": "0"
       },
       "rhs": {
         "generator": {
           "id": "manufactured_constant_columns",
-          "parameters": {"first_value": 1, "column_increment": 1},
+          "parameters": {
+            "first_value": 1,
+            "column_increment": 1
+          },
           "seed": "0"
         },
-        "count": 1
+        "count": 3
       },
       "data_format": "csr-f64-i32-i64-le",
-      "encoding": {"kind": "real"}
+      "encoding": {
+        "kind": "real"
+      }
     },
     {
-      "id": "laplacian-1000-rhs4",
+      "id": "laplacian-2d",
       "generator": {
-        "id": "laplacian_1d",
-        "parameters": {"order": 1000, "diagonal": 2, "off_diagonal": -1},
+        "id": "laplacian_2d",
+        "parameters": {
+          "mx": 20,
+          "my": 16,
+          "dx": 0.05,
+          "dy": 0.08
+        },
         "seed": "0"
       },
       "rhs": {
         "generator": {
           "id": "manufactured_constant_columns",
-          "parameters": {"first_value": 1, "column_increment": 1},
+          "parameters": {
+            "first_value": 1,
+            "column_increment": 1
+          },
           "seed": "0"
         },
-        "count": 4
+        "count": 3
       },
       "data_format": "csr-f64-i32-i64-le",
-      "encoding": {"kind": "real"}
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "laplacian-3d",
+      "generator": {
+        "id": "laplacian_3d",
+        "parameters": {
+          "mx": 8,
+          "my": 7,
+          "mz": 6,
+          "dx": 0.1,
+          "dy": 0.15,
+          "dz": 0.2
+        },
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_constant_columns",
+          "parameters": {
+            "first_value": 1,
+            "column_increment": 1
+          },
+          "seed": "0"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
     }
   ],
   "solvers": [
     {
-      "id": "candidate-solver",
+      "id": "eigen-sparse-lu",
       "options": {
         "thread_limit": 1,
         "relative_tolerance": 1e-10,
-        "absolute_tolerance": 0,
+        "absolute_tolerance": 1e-12,
         "iteration_limit": "10000"
       }
     }
@@ -53,20 +101,25 @@
   "passes": [
     {
       "id": "timing",
-      "instrumentation": {"kind": "baseline", "collectors": []},
+      "instrumentation": {
+        "kind": "baseline",
+        "collectors": []
+      },
       "warmup_runs": 1,
-      "measured_runs": 5,
-      "case_timeout_seconds": 300
+      "measured_runs": 3,
+      "case_timeout_seconds": 30
     },
     {
-      "id": "os-trace",
+      "id": "phase-resources",
       "instrumentation": {
         "kind": "trace",
-        "collectors": ["linux.vm_events", "linux.thread_events", "linux.page_faults"]
+        "collectors": [
+          "linux.phase_resources"
+        ]
       },
       "warmup_runs": 1,
       "measured_runs": 2,
-      "case_timeout_seconds": 300
+      "case_timeout_seconds": 30
     }
   ]
 }

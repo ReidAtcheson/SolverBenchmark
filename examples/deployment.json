@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "solvers": {
+    "eigen-sparse-lu": {
+      "executable": "../build/sb-eigen",
+      "arguments": [],
+      "environment": {}
+    }
+  }
+}

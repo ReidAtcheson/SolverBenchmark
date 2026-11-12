@@ -1,9 +1,12 @@
-# Local worker protocol — draft 1.0
+# Local worker protocol — version 1.0
 
-This document is the proposed language-neutral schema and state machine. Nothing
-here depends on the layout of `solver_t`, `std::mdspan`, a C++ enum/struct, or a
-particular libc. The C++ models in `mockup/runtime.h` are illustrative local
-objects only. This draft is not implemented or frozen.
+This is the language-neutral protocol implemented by the Python parent in
+`python/solver_benchmark/supervisor.py` and the C++ worker in `src/worker.cpp`.
+Nothing on the wire depends on `solver_t`, `std::mdspan`, a C++ enum/struct, or a
+particular libc. The adapter-facing entry point is declared in
+`include/solver_benchmark/worker.h`; the earlier control-flow sketches have been
+replaced by the runtime. Earlier PR drafts were not released
+compatibility contracts.
 
 A **data format** specifies the representation of arrays exchanged with a worker.
 A [benchmark profile](benchmark-profile.md) specifies the complete experiment:
@@ -16,11 +19,17 @@ The initial transport is local Linux: a bidirectional Unix stream socket for
 control, an immutable shared-memory input object, and a separate writable output
 object. Each `(case, solver, measurement pass)` launches a **fresh executable
 image**, never backend code in a fork-only continuation. The worker can be built
-and installed elsewhere. Launch arguments select inherited descriptors:
+and installed elsewhere. Launch arguments select inherited descriptors (the actual numbers are selected
+by the parent and need not be 3, 4, and 5):
 
 ```text
 /external/path/solver-worker --sb-control-fd=3 --sb-input-fd=4 --sb-output-fd=5
 ```
+
+The worker also accepts `--describe`, which prints the same worker identity
+object used by hello and exits without shared mappings or solver construction.
+The parent uses this command when resolving the software manifest. Backend-specific
+arguments must not shadow the standardized `--sb-*` descriptor flags.
 
 The parent makes only these intended descriptors available to the worker. It
 owns object lifetime and closes handles after reaping the child. Input is frozen
@@ -42,8 +51,8 @@ failure. Duplicate JSON keys, invalid UTF-8, nonfinite JSON numbers, invalid fie
 types, and out-of-range values are rejected. Sending a frame on a closed socket
 must become an error, not kill the parent via SIGPIPE.
 
-For precision across languages, **64-bit integer fields use canonical unsigned
-decimal JSON strings** (`"0"` or a nonzero digit followed by digits); all buffer
+For precision across languages, **buffer sizes/offsets and other specified uint64
+fields use canonical unsigned decimal JSON strings** (`"0"` or a nonzero digit followed by digits); all buffer
 offsets, byte lengths, entry counts, dense strides, and iteration counts use this
 rule. Signed CSR offsets are nonnegative values bounded by INT64_MAX. Other
 integer fields use JSON numbers restricted to their stated 32-bit ranges.
@@ -70,8 +79,8 @@ and the instrumentation modes supported by its standardized worker runtime:
 }
 ```
 
-The parent selects a common major and the minimum supported minor for that
-major, then sends `run`. Lack of a common version/data format is a protocol
+The implemented parent selects protocol 1.0 when the worker advertises major 1
+with a nonnegative maximum minor, then sends `run`. The C++ worker accepts 1.0. Lack of a common version/data format is a protocol
 compatibility failure, before solver construction. A successful `ready` echoes
 the exact selected version/data format. Major changes may break message meaning
 or state transitions. Minor changes may add optional fields; unknown optional
@@ -190,7 +199,7 @@ Diagonal dominance is not part of the property vocabulary. Solvers may determine
 it during `pre_analyze`, with its cost reported as preparation outside the core
 analysis-through-solve total. Positive definiteness remains a three-state property.
 Mathematical proofs of supplied assertions are not required by the transport;
-their provenance is recorded by the parent.
+the parent records the generating recipe and implementation identity.
 
 ### Interleaved complex encoding
 
@@ -225,8 +234,8 @@ componentwise and infinity-norm diagnostics remain explicitly real-system metric
 The worker sends `ready` only after validation and successful instrumentation
 negotiation. Required fields are `type`, `case_id`, `pass_id`, `provenance`,
 `protocol`, `data_format`, and `instrumentation`, echoing the accepted request.
-The parent records worker identity/build metadata from hello, checks it against
-the resolved manifest, and records requested options verbatim. An adapter must
+The parent records worker identity/build metadata from hello alongside the resolved
+manifest and records requested options verbatim. An adapter must
 honor those options or report unsupported during setup. Native stopping criteria
 and solver-specific compile/launch configuration accompany the worker's build
 metadata/documentation; arbitrary opaque backend options are deferred.
@@ -255,23 +264,60 @@ parent records requested and actually activated collectors and trace artifacts.
 An advertised trace mode means the worker can emit phase markers; it does not
 assert that every parent-side collector is installed on the host.
 
-Markers originate **inside the standardized worker**, not the solver adapter or
-parent's receive loop. They include case/pass/trial IDs, phase, begin/end, and
-process/thread identity, and share a known clock relationship with collected OS
-events. Emit them adjacent to the worker's phase clock boundaries. Control IPC
-occurs outside those boundaries. The trace pass measures its own instrumentation
-perturbation; its durations must never enter baseline timing summaries. Include
-setup, pre-analysis, analysis, numeric, solve, and teardown markers, including
-warm-ups, so retained allocations or worker threads can be followed across phases.
-An incomplete final phase after a crash has no invented end marker.
+Phase timestamps originate **inside the standardized worker**, not the solver
+adapter or parent's receive loop. All trace passes attach optional `marker` fields
+to phase/teardown begin messages and `trace`/`observations` fields to completed
+phase/teardown messages, including warm-ups. No trace fields are required for a
+baseline pass. Completed intervals use the actual worker clock samples; a begin
+marker alone is only a progress timestamp taken before phase-entry IPC.
 
-Available phase counters and sampled memory/thread observations are labeled with
-source, unit, scope, sampling policy, and loss/drop information. Trace loss or a
-collector dying marks instrumentation incomplete rather than silently claiming a
-complete trace. OS mapping operations are not interchangeable with heap allocation
-counts. Sampled per-phase RSS peaks are estimates; lifetime max RSS differences
-are not per-phase peaks. Collectors remain outside the solver's dependency graph,
-and collection/cleanup participates in the parent's bounded supervision.
+The optional completed `trace` object is:
+
+```text
+{begin_monotonic_ns: uint64 decimal string,
+ end_monotonic_ns: uint64 decimal string,
+ pid: integer, tid: integer, clock: "CLOCK_MONOTONIC"}
+```
+
+Begin-message `marker` uses `monotonic_ns` instead of begin/end timestamps and
+has the same PID/TID/clock fields. Case/pass/provenance/trial/phase identity comes
+from the containing message. Teardown uses its message type rather than a phase
+field. IPC and resource snapshots occur outside the reported clock interval.
+The trace pass still perturbs execution and its durations never enter baseline
+summaries. A crash leaves the active phase incomplete; no end timestamp is invented.
+
+`linux.phase_resources` requires completed `observations` containing:
+
+| Field | Meaning |
+| --- | --- |
+| `source`, `scope` | `getrusage+procfs`, `worker_process`. |
+| `minor_page_faults`, `major_page_faults` | Differences in process `getrusage(RUSAGE_SELF)` counters at phase boundaries. |
+| `voluntary_context_switches`, `involuntary_context_switches` | Process counter differences at phase boundaries. |
+| `rss_before_bytes`, `rss_after_bytes` | `/proc/self/status` VmRSS snapshots; null if unavailable. |
+| `threads_before`, `threads_after` | `/proc/self/status` thread-count snapshots; null if unavailable. |
+| `memory_measurement` | `boundary_snapshots_not_peak`. |
+
+These observations are currently emitted for every trace pass. Snapshot work may
+itself contribute to resource counter deltas. Before/after RSS and thread counts
+do not reconstruct changes within the phase or establish a phase peak. Lifetime
+max RSS is still collected separately at child reap.
+
+The optional perf collectors and exact events are listed in the
+[profile specification](benchmark-profile.md). The parent launches `perf record`
+attached to the worker, with inherited events, `--clockid mono`, and events disabled
+initially. It enables collection through perf's control pipe and waits for its ACK
+before sending the worker start message. This requires a compatible perf/kernel
+and sufficient access to the requested events. It preserves `perf.data`, decoded
+`perf-events.txt`, and logs; decode errors or detected lost events mark collection
+incomplete. Worker intervals and perf events can be joined offline on monotonic
+time and process/thread identity. No BPF backend, automatic event-to-phase reducer,
+or allocation-lifetime reconstruction is implemented.
+
+The parent writes `phase-trace.json` with the phase/teardown records and provenance.
+Missing required phase observations or incomplete marker pairs mark instrumentation
+incomplete. OS mapping events are not heap allocation counts, and differences in
+lifetime max RSS are not per-phase peaks. Collectors remain outside the solver's
+dependency graph and are stopped during the parent's cleanup path.
 
 ## Trial messages and state machine
 
@@ -375,13 +421,15 @@ pass. Exit zero with a missing/truncated footer is a protocol failure. Terminal
 status/exit disagreement is a protocol failure. A signal is a worker crash;
 an expired deadline is a timeout even if the parent then kills the child.
 
-The parent monitors the control socket, logs, collectors, deadline, and child
-exit together; it must not block indefinitely on a frame or ACK. On timeout or
+The parent monitors the control socket, logs, deadline, and child exit, and
+checks/finalizes collector output; it must not block indefinitely on a frame or ACK. On timeout or
 protocol error it terminates the worker process group and reaps the child,
 including failures during handshake or teardown. Parent exceptions take the same
 cleanup path, with collectors detached/stopped and artifacts finalized as complete
 or incomplete under a bounded cleanup policy. Broken connections terminate the
-worker rather than leaving an orphan waiting forever. Already completed samples
+worker rather than leaving an orphan waiting forever. The supervisor uses a
+blocking selector (and pidfd where available), plus a sleeping deadline watchdog;
+it does not busy-spin while the solver computes. Already completed samples
 and last active state survive; unfinished phase times remain absent.
 
 Kernel process resources are collected by the parent at reap (for example Linux
