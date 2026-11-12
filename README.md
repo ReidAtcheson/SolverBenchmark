@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
 ```
 
 Setup binds an instance to exactly one immutable matrix, including its entries,
-dimensions, properties, and attributes. No subsequent method takes a matrix;
+dimensions and properties. No subsequent method takes a matrix;
 replacing it requires a new instance. Its backing arrays, RHS, and output buffer
 remain valid until after destruction. An adapter retains a **copy of the view**,
 not a reference to a temporary view object. Setup configures the backend;
@@ -179,15 +179,12 @@ assertions, infer additional properties, or decline unknown cases. Numerical
 symmetry alone need not imply stored structural symmetry when explicit zeros
 are present. None of these properties permits omitting a triangle.
 
-Quantitative attributes supplement assertions. The first is the signed row
-diagonal dominance margin, `min_i (abs(a_ii) - sum_{j != i} abs(a_ij))`. Its optional
-record contains a finite `value` and `kind: exact | lower_bound`. Exact positive,
-zero, and negative values mean strict dominance, weak but nonstrict dominance,
-and non-dominance respectively. A positive lower bound proves strict dominance;
-a zero lower bound proves only weak dominance. A negative lower bound proves
-neither non-dominance nor dominance. Known assertions can exist without a known
-margin; absent attributes mean unknown. Contradictory assertions/attributes are
-rejected, including a lower bound incompatible with an asserted negative result.
+The framework exposes weak and strict diagonal dominance as three-state
+assertions, but does not supply a numerical dominance margin. A solver can
+compute that inexpensive derived diagnostic during `pre_analyze` if useful.
+Preparation remains timed and reported separately; it is excluded from the
+analysis-through-solve total. A quantitative property API can be added later
+when there is metadata worth transporting rather than recomputing.
 
 ## Complex systems using real storage
 
@@ -200,9 +197,9 @@ zero. An arbitrary even-sized real matrix does not qualify.
 
 Real backends solve the delivered system directly; complex backends reconstruct
 their preferred matrix during pre-analysis and translate dense blocks during
-solve. All properties and quantitative attributes describe the delivered **real**
+solve. All properties describe the delivered **real**
 matrix. Any assertion about the logical complex matrix needs an explicitly
-scoped future attribute. The parent validates against the delivered real system;
+scoped future property. The parent validates against the delivered real system;
 Euclidean residual norms match the complex interpretation. Infinity-norm and
 componentwise diagnostics retain their real-system definitions. Reports retain
 both logical complex order and delivered real order/entry count.

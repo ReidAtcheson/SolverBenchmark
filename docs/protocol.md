@@ -47,8 +47,7 @@ decimal JSON strings** (`"0"` or a nonzero digit followed by digits); all buffer
 offsets, byte lengths, entry counts, dense strides, and iteration counts use this
 rule. Signed CSR offsets are nonnegative values bounded by INT64_MAX. Other
 integer fields use JSON numbers restricted to their stated 32-bit ranges.
-Timing/tolerance fields are finite nonnegative JSON numbers; attribute values
-such as dominance margins may be signed finite JSON numbers.
+Timing/tolerance fields are finite nonnegative JSON numbers.
 
 ## Versions and data formats
 
@@ -120,9 +119,6 @@ illustrative placeholders of the required shape, not computed example digests:
       "positive_definite": "yes",
       "diagonally_dominant": "yes",
       "strictly_diagonally_dominant": "no"
-    },
-    "attributes": {
-      "row_diagonal_dominance_margin": {"kind": "exact", "value": 0}
     }
   },
   "dense": {"rows": 3, "columns": 2, "row_stride": "1", "column_stride": "3"},
@@ -162,7 +158,6 @@ Required fields and constraints:
 | `matrix.encoding` | `"real"` or `"complex_interleaved"`; semantics below. |
 | `matrix.complex_order` | Required only for complex encoding, forbidden for real encoding; JSON integer satisfying `2 * complex_order == order`. |
 | `matrix.properties` | Object mapping property names to `"yes"`, `"no"`, or `"unknown"`; omitted names mean unknown. Definitions are in README. Unknown names carry no assertion to this receiver. |
-| `matrix.attributes` | Object of typed optional attributes; empty means no quantitative assertions. Definitions below. |
 | `dense.rows` | Equal to `matrix.order`. |
 | `dense.columns` | RHS count, a JSON integer in `[1, UINT32_MAX]`. |
 | `dense.row_stride`, `dense.column_stride` | uint64 decimal strings; must equal `1` and `dense.rows` respectively in this initial packed column-major format. Strides are in elements, not bytes. |
@@ -179,7 +174,7 @@ Required fields and constraints:
 | `iteration_limit` | Positive uint64 decimal string; only iterative backends use it. |
 
 All listed descriptor, plan, and option fields are required except the conditional
-`complex_order` and individual property/attribute entries. Input arrays are row
+`complex_order` and individual property entries. Input arrays are row
 offsets, column IDs, values, and RHS. Solution resides only in the output object.
 Regions within an object cannot overlap. Row offsets/values/RHS/solution are
 aligned to 8 bytes; columns to 4. Padding is allowed and has no meaning. There is
@@ -188,29 +183,16 @@ blocks are reconstructed as local rank-two views; no `mdspan` object is serializ
 
 Both sides check multiplication/addition overflow, alignment, region bounds,
 address-space fit, element counts, CSR invariants, finite values/RHS, and known
-property/attribute contradictions before exposing typed views. `order + 1`,
+property contradictions before exposing typed views. `order + 1`,
 `2 * complex_order`, and `rows * columns` are computed in a wider checked type.
 Validate offset monotonicity and ranges before indexing column/value storage.
 Reject malformed data as a protocol/input error, not `unsupported`.
 
-### Quantitative attributes
-
-`row_diagonal_dominance_margin` is optional. When present it is an object with
-required `kind` (`"exact"` or `"lower_bound"`) and finite signed `value`. Define
-`delta = min_i (abs(a_ii) - sum_{j != i} abs(a_ij))` on the delivered real matrix.
-`exact` asserts `delta == value`; `lower_bound` asserts `delta >= value`. An exact
-positive/zero/negative value establishes strict dominance/weak but not strict
-dominance/non-dominance respectively. A positive lower bound establishes strict
-dominance; a zero lower bound establishes weak dominance without deciding
-strictness. A negative lower bound alone does not disprove dominance.
-
-Missing attributes are unknown, never zero. Boolean assertions may be supplied
-without a numeric attribute. Reject contradictions implied by a supplied
-attribute and known assertions, without treating a conservative lower bound as
-an exact measurement. This typed vocabulary can grow through optional attributes;
-unknown attribute names carry no assertion to the receiver. Mathematical proofs
-of asserted properties/bounds are not required by the transport. Provenance must
-identify how the generator or preparation stage established them.
+No quantitative diagonal dominance margin is transported. The weak/strict
+three-state assertions remain available; solvers may compute a margin during
+`pre_analyze`. Its cost belongs to reported preparation time, outside the core
+analysis-through-solve total. Mathematical proofs of supplied property assertions
+are not required by the transport; their provenance is recorded by the parent.
 
 ### Interleaved complex encoding
 
@@ -230,7 +212,7 @@ promise a four-entry stored pattern per complex nonzero. The parent validates
 this encoding before publication and the worker validates it before exposing
 views. Dimensions must be even; malformed blocks are input errors. RHS and
 solution rows are interleaved real/imaginary components for every RHS column.
-All properties and quantitative attributes describe the delivered real matrix,
+All properties describe the delivered real matrix,
 not an unmarked property of the logical complex matrix.
 
 A real backend may solve these arrays unchanged. A complex backend reconstructs

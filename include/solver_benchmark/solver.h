@@ -53,32 +53,16 @@ private:
         static_cast<std::size_t>(matrix_property_t::count)> states_{};
 };
 
-enum class attribute_kind_t { exact, lower_bound };
-
-struct scalar_attribute_t {
-    scalar_t value;  // Finite; a signed value, including negative margins.
-    attribute_kind_t kind;
-};
-
-struct matrix_attributes_t {
-    // min_i (abs(a_ii) - sum_{j != i} abs(a_ij)) of the DELIVERED real matrix.
-    // Missing means unknown. An exact positive/zero/negative margin establishes
-    // strict/weak-but-not-strict/non-dominance. A nonpositive lower bound does
-    // not disprove dominance. Assertions can exist without a numerical margin.
-    std::optional<scalar_attribute_t> row_diagonal_dominance_margin;
-};
-
 enum class matrix_encoding_t { real, complex_interleaved };
 
 struct matrix_info_t {
     index_t order = 0;
     offset_t nonzeros = 0;
     matrix_properties_t properties;
-    matrix_attributes_t attributes;
     matrix_encoding_t encoding = matrix_encoding_t::real;
     // Required only for complex_interleaved, with order == 2 * complex_order.
     // a+ib is encoded by the real block [a,-b; b,a], vector [Re0,Im0,...].
-    // All properties/attributes above describe the delivered real matrix.
+    // All properties above describe the delivered real matrix.
     std::optional<index_t> complex_order;
 };
 
@@ -151,7 +135,8 @@ public:
         const solver_options_t& options) = 0;
 
     // Timed input adaptation: CSR/CSC, index width, triangle extraction, complex
-    // reconstruction. Must not perform symbolic analysis/orderings/factorization.
+    // reconstruction, and inexpensive derived diagnostics such as dominance margins.
+    // Must not perform symbolic analysis/orderings/factorization.
     virtual phase_result_t pre_analyze() = 0;
 
     // Symbolic analysis, fill-reducing ordering, algorithmic property checks.

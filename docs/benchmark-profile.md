@@ -86,8 +86,8 @@ are mandatory before hashing or execution:
 3. Resolve each generator ID to a parameter schema and reject missing/defaulted
    parameters, unknown parameters, and invalid types/ranges. Unknown generators
    are a profile resolution error before any worker starts.
-4. Check generated CSR/dense sizes, overflow, address-space limits, property and
-   attribute consistency, and the declared real/complex encoding. An interleaved
+4. Check generated CSR/dense sizes, overflow, address-space limits, property
+   consistency, and the declared real/complex encoding. An interleaved
    complex matrix has even delivered order and the specified 2-by-2 block
    relation; RHS and solutions use the same interleaving for each column.
 5. Resolve the solver IDs, options, and collector IDs; record all software and
@@ -158,12 +158,11 @@ ASCII("SolverBenchmark.input.v1\0")
 representation. All byte counts exclude mapping padding. Input metadata is a
 canonical object with required keys `data_format`, `matrix`, and `dense` copied
 from the validated run descriptor: matrix metadata includes order, nonzeros,
-encoding, assertions, and quantitative attributes; dense metadata describes the
+encoding and assertions; dense metadata describes the
 packed column-major RHS shape/strides. In this normalized metadata copy, insert
 the v1 property keys `symmetric`, `structurally_symmetric`, `positive_definite`,
 `diagonally_dominant`, and `strictly_diagonally_dominant`, using `"unknown"` for any omitted key,
-and insert `attributes.row_diagonal_dominance_margin: null` when that attribute
-is absent. Preserve supplied unknown property/attribute keys and their values
+without adding a quantitative attribute object. Preserve supplied unknown property keys and their values
 for hashing even if the receiver cannot use them as mathematical assertions.
 Do not insert defaults for unknown names. Changing these normalization rules
 requires a new input-hash domain version, not receiver-dependent normalization.
