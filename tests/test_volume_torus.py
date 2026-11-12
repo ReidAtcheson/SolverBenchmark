@@ -1,12 +1,14 @@
 import math
 import unittest
 from collections import Counter
-from itertools import combinations
+from decimal import Decimal, localcontext
+from itertools import combinations, permutations
 from unittest.mock import patch
 
 from solver_benchmark.mesh_problems import assemble, refine, simplex_matrices
 from solver_benchmark.volume_torus import (assemble_volume, boundary_vertices,
                                          build, torus_volume_mesh)
+from solver_benchmark.problems import generate_case, decode_array
 from test_mesh_problems import assert_spd, quadratic_form
 
 
@@ -25,7 +27,66 @@ def connected(nodes, edges):
     return visited == set(nodes)
 
 
+def decimal_tetrahedron(points):
+    """Independent high-precision reference using pivoted Gauss--Jordan solves.
+
+    Decimal starts from the exact input floats, so comparisons isolate element
+    arithmetic rather than the error of approximating the curved geometry.
+    No Gram matrix or cofactor formulas from production are used here.
+    """
+    # Invert the four-point affine interpolation matrix, not the production
+    # routine's scaled three-edge Jacobian.
+    a = [[Decimal(1)] + [Decimal(x) for x in p] +
+         [Decimal(i == j) for j in range(4)] for i,p in enumerate(points)]
+    determinant = Decimal(1)
+    for k in range(4):
+        pivot = max(range(k,4), key=lambda i:abs(a[i][k]))
+        if pivot != k:
+            a[k],a[pivot] = a[pivot],a[k]
+            determinant = -determinant
+        divisor = a[k][k]
+        determinant *= divisor
+        a[k] = [x/divisor for x in a[k]]
+        for i in range(4):
+            if i != k:
+                factor = a[i][k]
+                a[i] = [x-factor*y for x,y in zip(a[i],a[k])]
+    gradients = [[a[j][4+i] for j in range(1,4)] for i in range(4)]
+    volume = abs(determinant)/6
+    stiffness = [[volume*sum(x*y for x,y in zip(gi,gj)) for gj in gradients]
+                 for gi in gradients]
+    return stiffness,volume
+
+
 class VolumeTorusTests(unittest.TestCase):
+    def test_thin_tetrahedron_rotation_scaling_and_vertex_order(self):
+        def rotate(p):
+            x,y,z = p
+            c,s = math.cos(.37),math.sin(.37)
+            x,y = c*x-s*y,s*x+c*y
+            c,s = math.cos(.73),math.sin(.73)
+            return x,c*y-s*z,s*y+c*z
+
+        for thickness in (1e-4,1e-8):
+            base = [(0.,0.,0.),(1.,0.,0.),(.3,thickness,0.),(.1,.2*thickness,.7*thickness)]
+            for scale in (1e-80,1.,1e80):
+                vertices = [tuple(scale*x for x in rotate(p)) for p in base]
+                for ordering in permutations(range(4)):
+                    with self.subTest(thickness=thickness,scale=scale,ordering=ordering),localcontext() as context:
+                        context.prec = 80
+                        points = [vertices[i] for i in ordering]
+                        stiffness,volume = decimal_tetrahedron(points)
+                        expected = [[float(x) for x in row] for row in stiffness]
+                        actual,mass = simplex_matrices(points)
+                        magnitude = max(abs(x) for row in expected for x in row)
+                        # Scaling this comparison avoids overflow at large spatial scales.
+                        error = math.sqrt(math.fsum(((a-b)/magnitude)**2 for ar,br in zip(actual,expected) for a,b in zip(ar,br)))
+                        norm = math.sqrt(math.fsum((x/magnitude)**2 for row in expected for x in row))
+                        tolerance = 1e-10 if thickness == 1e-4 else 1e-7
+                        self.assertLess(error/norm,tolerance)
+                        self.assertAlmostEqual(math.fsum(x for row in mass for x in row)/float(volume),1,delta=tolerance)
+                        self.assertEqual(actual,[list(row) for row in zip(*actual)])
+
     def test_filled_cross_section_and_no_seam_cracks(self):
         major,minor,radial = 6,5,2
         vertices,elements = torus_volume_mesh(major,minor,radial,2,.5)
@@ -120,3 +181,45 @@ class VolumeTorusTests(unittest.TestCase):
                 build('volume_diffusion_torus',{**p,'major_segments':10**8},10**20)
             with self.assertRaisesRegex(ValueError,'dense order'):
                 build('volume_diffusion_torus',p,100000,max_order=1)
+
+    def test_thin_torus_against_high_precision_element_solves(self):
+        for radius in (0.001,0.0003,0.0001):
+            with self.subTest(minor_radius=radius),localcontext() as context:
+                context.prec = 80
+                parameters = dict(major_segments=8,minor_segments=8,radial_layers=2,
+                                  refinement=0,major_radius=1,minor_radius=radius,
+                                  diffusion=1,reaction=0)
+                recipe = {'id':'thin-torus','data_format':'csr-f64-i32-i64-le',
+                          'encoding':{'kind':'real'},
+                          'generator':{'id':'volume_diffusion_torus','parameters':parameters,'seed':'0'},
+                          'rhs':{'count':1,'generator':{'id':'manufactured_seeded_columns',
+                                  'parameters':{'offset':0,'amplitude':1},'seed':'7'}}}
+                problem = generate_case(recipe)
+                vertices,elements = torus_volume_mesh(8,8,2,1,radius)
+                boundary = boundary_vertices(elements)
+                active = {node:i for i,node in enumerate(j for j in range(len(vertices)) if j not in boundary)}
+                reference = {}
+                mass_volume,reference_volume = [],Decimal(0)
+                for element in elements:
+                    points = [vertices[i] for i in element]
+                    stiffness,volume = decimal_tetrahedron(points)
+                    reference_volume += volume
+                    mass_volume.extend(x for row in simplex_matrices(points)[1] for x in row)
+                    for i,node in enumerate(element):
+                        for j,other in enumerate(element):
+                            if node in active and other in active:
+                                key = (active[node],active[other])
+                                reference[key] = reference.get(key,Decimal(0))+stiffness[i][j]
+                arrays = problem['arrays']
+                offsets = decode_array('q',arrays['row_offsets'])
+                columns = decode_array('i',arrays['column_indices'])
+                values = decode_array('d',arrays['values'])
+                actual = {(i,columns[k]):values[k] for i in range(len(offsets)-1)
+                          for k in range(offsets[i],offsets[i+1])}
+                reference = {key:float(value) for key,value in reference.items()}
+                keys = actual.keys() | reference.keys()
+                difference = math.sqrt(math.fsum((actual.get(key,0)-reference.get(key,0))**2 for key in keys))
+                norm = math.sqrt(math.fsum(x*x for x in reference.values()))
+                self.assertLess(difference/norm,1e-9)
+                self.assertAlmostEqual(math.fsum(mass_volume)/float(reference_volume),1,delta=1e-10)
+                self.assertEqual(len(offsets)-1,len(active))

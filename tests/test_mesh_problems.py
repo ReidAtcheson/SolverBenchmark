@@ -52,6 +52,24 @@ class MeshTests(unittest.TestCase):
             for row_a,row_b in zip(x,y):
                 for u,v in zip(row_a,row_b): self.assertAlmostEqual(u,v)
 
+    def test_thin_triangle_and_degenerate_elements(self):
+        # Direct area remains resolved when subtracting entries of E.T E
+        # would round away the triangle's height entirely.
+        for height in (1e-4,1e-8):
+            points = [(0.,0.,0.),(1.,0.,0.),(.5,height,0.)]
+            stiffness,mass = simplex_matrices(points)
+            self.assertAlmostEqual(math.fsum(x for row in mass for x in row)/(height/2),1)
+            self.assertAlmostEqual(stiffness[2][2]/(0.5/height),1)
+        for points in ([(0,0),(1,0),(2,0)],
+                       [(0,0,0),(2,3,5),(14,21,35)],
+                       [(0,0,0),(1,0,0),(0,1,0),(1,1,0)],
+                       [(0,0,0),(1,2,3),(4,5,6),(5,7,9)],
+                       [(0,0,0),(2,3,5),(7,11,13),(9,14,18)],
+                       [(0,0,0)]*4,
+                       [(0,0),(math.inf,0),(0,1)]):
+            with self.subTest(points=points),self.assertRaises(ValueError):
+                simplex_matrices(points)
+
     def test_refinement_conformity_volume_and_affine_energy(self):
         for dimension in (2,3):
             vertices,elements = box_mesh(2,dimension,.14,123)

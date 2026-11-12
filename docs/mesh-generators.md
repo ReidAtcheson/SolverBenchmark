@@ -66,13 +66,27 @@ new vertices on the analytic torus. This avoids projecting a coarse spatial
 chord onto the wrong side of a thin torus. Element matrices still use the actual
 flat triangles joining these vertices, not the curved analytic surface.
 
-For an element with edge matrix `E`, the Gram matrix `G = EᵀE` gives the dot
-products of basis gradients through `G⁻¹`. The element measure is
-`sqrt(det(G))/dimension!`. The consistent mass matrix is
+Element gradients are computed from the edge Jacobian directly, without forming
+`EᵀE` and squaring its condition number. Edge components are first divided by
+their largest absolute value. For tetrahedra, partial-pivoted elimination of this
+scaled 3-by-3 Jacobian yields the basis gradients and determinant. For triangles,
+cross products give the area and tangential basis gradients, including triangles
+embedded in 3D. The stiffness and mass terms restore the spatial scale as
+`scale^(dimension-2)` and `scale^dimension`, respectively, avoiding unnecessary
+intermediate overflow on uniformly large or small elements. This is the usual
+inverse-Jacobian mapping of finite-element gradients, as used in
+[MFEM's physical shape-gradient calculation](https://docs.mfem.org/4.8/fe__base_8cpp_source.html).
+The consistent mass matrix is
 `measure × (1 + δij) / ((dimension+1)(dimension+2))`.
 Both terms are assembled before removing constrained box nodes. This yields
 symmetric positive-definite systems for the accepted coefficients. The code
-rejects degenerate or nonfinite geometry and arithmetic. On the torus it also
+rejects degenerate or nonfinite geometry and arithmetic. After normalizing the
+edges, a triangle cross-product norm or tetrahedron elimination pivot at most
+`64*ulp(1.0)` is treated as numerically unresolved geometry and rejected. This
+prevents exact dependencies perturbed by floating-point division from producing
+spurious enormous stiffnesses. It is a numerical-rank safeguard, not a promise
+of uniform accuracy for arbitrarily ill-conditioned shapes. Element measures
+and mass weights that underflow are also rejected. On the torus it additionally
 requires each assembled reaction row sum and the resulting matrix row sum to
 exceed 64 binary64 ulps of the accumulated absolute stiffness contributions.
 A positive reaction that underflows or disappears beneath stiffness roundoff
@@ -98,3 +112,8 @@ characteristic zero, exact analytic-surface vertex placement, vanishing constant
 stiffness action, and second-order area convergence. Small assembled matrices
 also pass an independent dense Cholesky factorization. Seed repeatability, preallocation rejection for local and wire limits, and
 rejection of numerically unresolved torus reaction terms are tested.
+Thin elements are checked under rotations, all tetrahedral vertex permutations,
+and spatial scales from `1e-80` to `1e80`; genuinely collinear/coplanar inputs
+must be rejected. Thin solid-torus matrices are compared against an independent
+80-digit affine interpolation solve, as described in the
+[volume generator verification](volume-torus.md).

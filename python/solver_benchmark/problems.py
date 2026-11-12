@@ -6,7 +6,7 @@ import re
 import sys
 
 DATA_FORMAT = "csr-f64-i32-i64-le"
-GENERATOR_VERSION = "4"
+GENERATOR_VERSION = "5"
 MAX_INDEX = (1 << 31) - 1
 MAX_OFFSET = (1 << 63) - 1
 DEFAULT_MAX_ENTRIES = 5_000_000

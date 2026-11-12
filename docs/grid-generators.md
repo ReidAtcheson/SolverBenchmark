@@ -82,6 +82,12 @@ For a line from f to t, let `y = 1/(r + i*x)` and
 `Yff=(y+i*bc/2)/tap²`, `Ytt=y+i*bc/2`, `Yft=-y/conj(a)`,
 `Ytf=-y/a`. These represent a π line plus an ideal from-side transformer,
 using the conventions in [MATPOWER's branch model](https://matpower.app/manual/matpower/Branches.html).
+The reciprocal `y` uses the same scaled real arithmetic as the initial AC
+generator, rather than direct complex division. Thus a representable admittance
+is not lost when `r²+x²` or a complex-division intermediate would overflow.
+Unrepresentable admittance or assembled values fail explicitly; see
+[numerical corner cases](numerical-corner-cases.md) for the extreme-range
+regressions and limits.
 
 Voltage angles vary smoothly with x; magnitudes use
 `1 + voltage_spread*sin(2πx)*sin(2πy)`. Bus 0 is fixed at `1+0i`.

@@ -104,6 +104,17 @@ closed genus-one surface. The centerline and radial interior unknowns remain
 free after boundary elimination. Small matrices pass independent dense Cholesky
 checks with zero and positive reaction.
 
+Thin-tube regressions use major radius one, minor radii `0.001`, `0.0003`, and
+`0.0001`, eight segments in each angular direction, and two radial layers. They
+exercise the public generator and compare the complete assembled stiffness
+matrix against independent 80-digit solves of each element's affine interpolation
+matrix. The previous Gram-matrix calculation lost accuracy on these finite,
+nondegenerate elements; the direct, scaled and pivoted Jacobian calculation
+avoids that squaring of the geometric condition number. Additional element tests
+cover rotations, every vertex ordering, and large/small uniform spatial scales.
+Numerically unresolved geometry is rejected using the
+[simplex rank safeguard](mesh-generators.md), rather than returned as a matrix.
+
 Before allocation, generation requires `16 * final_tetrahedron_count <=
 max_entries` and a conservative vertex bound `4 * final_tetrahedron_count` to
 fit the effective order limit, including complex expansion and dense RHS width.

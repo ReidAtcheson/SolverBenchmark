@@ -7,6 +7,8 @@ import cmath
 import math
 import re
 
+from .electrical import line_admittance
+
 COMMON = ('buses', 'mesh_fraction', 'reactance', 'impedance_spread', 'tap_spread')
 SPECS = {
     'geographic_grid_dc': COMMON,
@@ -137,7 +139,7 @@ def _add(rows, i, j, value):
 def admittance(n, branches):
     rows = [dict() for _ in range(n)]
     for i,j,r,x,tap,shift,charging in branches:
-        y = 1/complex(r,x); t = cmath.rect(tap,shift); diagonal = y+0.5j*charging
+        y = line_admittance(r,x); t = cmath.rect(tap,shift); diagonal = y+0.5j*charging
         for a,b,v in ((i,i,diagonal/tap**2), (j,j,diagonal), (i,j,-y/t.conjugate()), (j,i,-y/t)):
             if not math.isfinite(v.real) or not math.isfinite(v.imag):
                 raise ValueError('admittance outside binary64 range')

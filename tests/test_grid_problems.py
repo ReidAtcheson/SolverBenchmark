@@ -2,6 +2,11 @@
 import cmath
 import math
 import unittest
+from decimal import Decimal, localcontext
+
+from solver_benchmark.electrical import line_admittance
+from solver_benchmark.problems import generate_case, decode_array
+from test_generated_matrices import case, matrix
 
 from solver_benchmark.grid_problems import (
     build, network, operating_point, admittance, power_injections,
@@ -119,6 +124,65 @@ class GridProblemTests(unittest.TestCase):
         # Positive p direction and negative p/lambda direction give both signs.
         self.assertGreater(a[0][0],0)
         self.assertLess(a[0][0]-2*(p['generation_cost']+1)*a[0][2*n-1],0)
+
+    def test_line_admittance_against_high_precision_reference(self):
+        # Decimal evaluates the original reciprocal formula, independently of
+        # the normalized binary64 implementation. Include unequal impedances,
+        # zero resistance, subnormal outputs, and a vanished small component.
+        for r,x in ((1e308,1e308), (1e308,5e307), (0.,1e308),
+                    (3e-200,4e-200), (1e200,1e-200), (0.02,0.1)):
+            with self.subTest(resistance=r,reactance=x), localcontext() as context:
+                context.prec = 80
+                dr,dx = Decimal.from_float(r),Decimal.from_float(x)
+                denominator = dr*dr+dx*dx
+                expected = (float(dr/denominator), float(-dx/denominator))
+                actual = line_admittance(r,x)
+                for value,reference in zip((actual.real,actual.imag),expected):
+                    self.assertTrue(math.isfinite(value))
+                    if reference == 0:
+                        self.assertEqual(value,0)
+                    else:
+                        self.assertAlmostEqual(value/reference,1,delta=3e-15)
+        for r,x in ((1e-320,1e-320), (0.,1e-320)):
+            with self.subTest(resistance=r,reactance=x), self.assertRaisesRegex(ValueError,'admittance'):
+                line_admittance(r,x)
+
+    def test_geographic_extreme_impedance_public_recipe(self):
+        p = dict(buses=3,mesh_fraction=0,reactance=1e308,impedance_spread=0,
+                 tap_spread=0,resistance=1e308,pv_fraction=0,angle_scale=0,
+                 voltage_spread=0,phase_shift=0,charging=0)
+        recipe = case('geographic_grid_ac',p)
+        recipe['generator']['seed'] = '1'
+        problem = generate_case(recipe)
+        actual = matrix(problem)
+        self.assertEqual(problem['matrix']['order'],4)
+        self.assertGreater(int(problem['matrix']['nonzeros']),0)
+        self.assertTrue(any(decode_array('d',problem['arrays']['rhs'])))
+        _,branches = network(p,'1')
+        # Flat all-PQ Jacobian [B G; -G B], formed from high-precision
+        # reciprocal impedances of the generated lines, not the Ybus helper.
+        with localcontext() as context:
+            context.prec = 80
+            expected = [[Decimal(0) for _ in range(4)] for _ in range(4)]
+            for i,j,r,x,_,_,_ in branches:
+                dr,dx = Decimal.from_float(r),Decimal.from_float(x)
+                denom = dr*dr+dx*dx
+                g,b = dr/denom,dx/denom
+                for rowblock,colblock,weight in ((0,0,b),(0,1,g),(1,0,-g),(1,1,b)):
+                    for row,col,sign in ((i,i,1),(j,j,1),(i,j,-1),(j,i,-1)):
+                        if row and col:
+                            expected[2*rowblock+row-1][2*colblock+col-1] += sign*weight
+            for i in range(4):
+                for j in range(4):
+                    reference = float(expected[i][j])
+                    value = actual.get((i,j),0)
+                    if reference:
+                        self.assertAlmostEqual(value/reference,1,delta=5e-15)
+                    else:
+                        self.assertEqual(value,0)
+        recipe['generator']['parameters'] = dict(p,resistance=1e-320,reactance=1e-320)
+        with self.assertRaisesRegex(ValueError,'admittance'):
+            generate_case(recipe)
 
     def test_bounds_validation_and_reproducibility(self):
         for name,p in [('geographic_grid_dc',DC),('geographic_grid_ac',AC),('grid_dc_opf_kkt',dict(DC,generation_cost=1.))]:

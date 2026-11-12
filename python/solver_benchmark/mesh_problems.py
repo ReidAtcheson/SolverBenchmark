@@ -95,36 +95,84 @@ def refine(vertices, elements, midpoint=None):
 def simplex_matrices(points):
     """Exact P1 stiffness and consistent mass on a triangle or tetrahedron.
 
-    The edge Gram matrix also handles a triangle embedded in 3D, giving
-    intrinsic piecewise-flat surface gradients without a coordinate chart.
+    Scale the edge Jacobian, then solve it directly with partial pivoting.
+    Forming E.T E would square the geometric condition number and can corrupt
+    thin tetrahedra well before they are actually degenerate. Cross products
+    similarly give intrinsic gradients for a triangle embedded in 3D.
     """
     d = len(points)-1
+    ambient = len(points[0])
+    if d not in (2,3) or ambient not in (2,3) or ambient < d or any(len(p) != ambient for p in points):
+        raise ValueError('only 2D/3D triangles and 3D tetrahedra are supported')
     edges = [[b-a for a,b in zip(points[0],p)] for p in points[1:]]
-    gram = [[math.fsum(x*y for x,y in zip(a,b)) for b in edges] for a in edges]
+    if not all(math.isfinite(x) for edge in edges for x in edge):
+        raise ValueError('nonfinite simplex geometry')
+    scale = max(abs(x) for edge in edges for x in edge)
+    if scale == 0:
+        raise ValueError('degenerate simplex')
+    edges = [[x/scale for x in edge] + [0.0]*(3-ambient) for edge in edges]
+    # Scaling/division can turn an exact dependency into a tiny nonzero pivot.
+    # Reject unresolved rank rather than manufacture enormous gradients from
+    # roundoff. The bound applies to the Jacobian, not its squared Gram matrix.
+    rank_tolerance = 64*math.ulp(1.0)
+
+    def cross(a,b):
+        return [math.fsum((a[1]*b[2], -a[2]*b[1])),
+                math.fsum((a[2]*b[0], -a[0]*b[2])),
+                math.fsum((a[0]*b[1], -a[1]*b[0]))]
+
     if d == 2:
-        a,b = gram[0]; _,c = gram[1]
-        determinant = a*c-b*b
-        adjugate = [[c,-b],[-b,a]]
-    elif d == 3:
-        a,b,c = gram[0]; _,d1,e = gram[1]; _,_,f = gram[2]
-        adjugate = [[d1*f-e*e,c*e-b*f,b*e-c*d1],
-                    [c*e-b*f,a*f-c*c,b*c-a*e],
-                    [b*e-c*d1,b*c-a*e,a*d1-b*b]]
-        determinant = math.fsum(gram[0][i]*adjugate[i][0] for i in range(3))
+        a,b = edges
+        normal = cross(a,b)
+        determinant = math.hypot(*normal)
+        if determinant <= rank_tolerance:
+            raise ValueError('degenerate simplex or numerically unresolved geometry')
+        normal = [x/determinant for x in normal]
+        cofactors = [cross(b,normal),cross(normal,a)]
+        gradients = [[x/determinant for x in row] for row in cofactors]
     else:
-        raise ValueError('only triangles and tetrahedra are supported')
-    if not math.isfinite(determinant) or determinant <= 0:
-        raise ValueError('degenerate simplex or geometry outside binary64 range')
-    volume = math.sqrt(determinant)/math.factorial(d)
-    inverse = [[v/determinant for v in row] for row in adjugate]
-    # grad(phi_0) = -sum_{i>0} grad(phi_i).
+        # Rows contain edge vectors. E * grad(phi_i) = unit_i, so the
+        # gradients are columns of the inverse. Pivoting avoids the severe
+        # product cancellation of explicit cofactors on rotated thin elements.
+        augmented = [row + [float(i == j) for j in range(3)] for i,row in enumerate(edges)]
+        determinant = 1.0
+        for k in range(3):
+            pivot = max(range(k,3),key=lambda i:abs(augmented[i][k]))
+            if pivot != k:
+                augmented[k],augmented[pivot] = augmented[pivot],augmented[k]
+                determinant = -determinant
+            divisor = augmented[k][k]
+            if abs(divisor) <= rank_tolerance:
+                raise ValueError('degenerate simplex or numerically unresolved geometry')
+            determinant *= divisor
+            augmented[k] = [x/divisor for x in augmented[k]]
+            for i in range(3):
+                if i != k:
+                    factor = augmented[i][k]
+                    augmented[i] = [x-factor*y for x,y in zip(augmented[i],augmented[k])]
+        gradients = [[augmented[j][3+i] for j in range(3)] for i in range(3)]
+    gradients.insert(0,[-math.fsum(row[k] for row in gradients) for k in range(3)])
+    measure = abs(determinant)/math.factorial(d)
+    # Retain the geometric scaling analytically: stiffness scales as h^(d-2),
+    # while mass scales as h^d. This avoids multiplying huge gradients by a tiny
+    # volume (or overflowing a Gram determinant) on uniformly scaled meshes.
+    stiffness_scale = measure * (scale if d == 3 else 1)
+    volume = measure
+    for _ in range(d):
+        volume *= scale
+    if not math.isfinite(volume) or volume <= 0:
+        raise ValueError('simplex measure outside positive finite binary64 range')
     stiffness = [[0.0]*(d+1) for _ in range(d+1)]
-    for i in range(d):
-        for j in range(d): stiffness[i+1][j+1] = volume*inverse[i][j]
-    for i in range(1,d+1):
-        stiffness[0][i] = stiffness[i][0] = -math.fsum(stiffness[i][1:])
-    stiffness[0][0] = -math.fsum(stiffness[0][1:])
-    mass = [[volume*(2 if i == j else 1)/((d+1)*(d+2)) for j in range(d+1)] for i in range(d+1)]
+    for i in range(d+1):
+        for j in range(i,d+1):
+            value = stiffness_scale*math.fsum(x*y for x,y in zip(gradients[i],gradients[j]))
+            if not math.isfinite(value):
+                raise ValueError('simplex stiffness outside binary64 range')
+            stiffness[i][j] = stiffness[j][i] = value
+    mass_weight = volume/((d+1)*(d+2))
+    if mass_weight == 0:
+        raise ValueError('simplex mass outside positive finite binary64 range')
+    mass = [[mass_weight*(2 if i == j else 1) for j in range(d+1)] for i in range(d+1)]
     return stiffness, mass
 
 

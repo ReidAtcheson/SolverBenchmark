@@ -2,6 +2,8 @@
 from array import array
 import math
 
+from .electrical import line_admittance
+
 
 def build(generator, p, limit, seed="0", *, max_order=(1 << 31)-1):
     def integer(k, minimum=1):
@@ -106,14 +108,8 @@ def build(generator, p, limit, seed="0", *, max_order=(1 << 31)-1):
         if generator == 'grid_dc_power_flow':
             weights = ((0,0,1/x),)
         else:
-            # Normalize before squaring: r*r + x*x can overflow (or
-            # underflow) even when the reciprocal impedance is representable.
-            scale = max(resistance, x)
-            r_scaled, x_scaled = resistance/scale, x/scale
-            denom = r_scaled*r_scaled + x_scaled*x_scaled
-            g, b = (r_scaled/denom)/scale, (x_scaled/denom)/scale
-            if not all(math.isfinite(w) for w in (g, b)) or not (g or b):
-                raise ValueError('line admittance outside binary64 range')
+            admittance = line_admittance(resistance, x)
+            g, b = admittance.real, -admittance.imag
             # Flat-start polar power Jacobian: [B G; -G B].
             weights = ((0,0,b),(0,1,g),(1,0,-g),(1,1,b))
         m = n-1
