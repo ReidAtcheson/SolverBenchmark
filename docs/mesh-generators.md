@@ -21,7 +21,9 @@ non-stencil coefficients. With zero jitter some stiffness couplings may vanish.
 
 The torus has `major_segments` and `minor_segments` at least four and finite
 radii satisfying `major_radius > minor_radius > 0`. The seed has no effect on
-this deterministic surface geometry. The torus is not a solid-torus volume mesh.
+this deterministic surface geometry. This is a periodic structured 2D
+triangulation. For a filled 3D domain, use the separate
+[solid torus volume generator](volume-torus.md).
 `diffusion` is finite and positive. `reaction` is finite and nonnegative for the
 box domains and strictly positive on the torus. All effective parameters must be
 present, including zero reaction for pure Dirichlet Poisson cases.

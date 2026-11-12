@@ -1,7 +1,7 @@
 # Generated physics and electric-grid matrices
 
-The [example profile](../examples/generated-physics-profile.json) contains 22
-cases from 16 generator families. Together with the original 1D/2D/3D Laplacians,
+The [example profile](../examples/generated-physics-profile.json) contains 24
+cases from 17 generator families. Together with the original 1D/2D/3D Laplacians,
 these cover scalar transport and waves, refined volume and surface finite
 elements, incompressible flow, porous flow, elasticity, and electrical networks.
 All inputs are generated locally from explicit parameters and seeds. No mesh
@@ -31,6 +31,7 @@ loads or a substitute for discretization verification.
 | `fem_diffusion_square` | Seeded perturbed triangular mesh, midpoint refinement, diffusion/reaction | SPD |
 | `fem_diffusion_cube` | Seeded perturbed tetrahedral mesh, midpoint refinement, diffusion/reaction | SPD |
 | `surface_diffusion_torus` | Intrinsic surface diffusion plus positive mass term on a closed torus | SPD |
+| `volume_diffusion_torus` | P1 volume diffusion/reaction on a tetrahedral solid torus with Dirichlet exterior | SPD |
 | `stokes_mac_2d` | Staggered velocity/pressure, no-slip boundary, pressure gauge removed | Symmetric indefinite |
 | `darcy_mixed_2d` | Mixed face-flux/cell-pressure system, heterogeneous permeability | Symmetric indefinite |
 | `elasticity_2d` | P1 plane-strain displacement FEM with clamped boundary | SPD, including a stiff nearly incompressible case |
@@ -44,6 +45,7 @@ Full equations, node/unknown ordering, boundary conditions, exact parameters,
 resource bounds, and sources are in:
 
 - [Refined mesh generators](mesh-generators.md)
+- [Solid torus volume generator](volume-torus.md)
 - [Mixed physics and elasticity generators](mixed-generators.md)
 - [Geographic electric-grid generators](grid-generators.md)
 
@@ -78,6 +80,8 @@ or transformers, flat voltage, and all non-slack buses PQ. In angle/magnitude
 ordering its Jacobian is `[B G; -G B]`, where the two grounded Laplacians have
 weights `x/(r²+x²)` and `r/(r²+x²)`. These initial generators ignore the seed.
 Use the geographic generators for heterogeneous and non-flat cases.
+[Numerical corner cases](numerical-corner-cases.md) documents stable admittance
+arithmetic and symmetry assertions after floating-point assembly.
 
 ## Scaling, reproducibility, and interpretation
 
@@ -122,10 +126,12 @@ ambitious statistically informed grid-generation process. Our geographic tree
 and loop model supplies varied sparse topology and standard electrical equations,
 but does not claim those statistical or operational realism guarantees.
 
-The mesh cases use conforming perturbed simplicial partitions, not Delaunay
-triangulation. The cube is a 3D volume and the torus is a 2D closed surface
-embedded in 3D. The grid Jacobians are evaluated at explicitly generated voltage
+The mesh cases use conforming simplicial partitions, with seeded perturbations
+available on square/cube meshes; they do not use Delaunay triangulation. The cube and solid torus are 3D volumes. The separate torus surface
+generator remains a 2D closed surface embedded in 3D. The surface uses a
+structured periodic angular triangulation; the solid torus uses a swept disk
+triangulation filled with tetrahedra. Neither is an unstructured Delaunay mesh. The grid Jacobians are evaluated at explicitly generated voltage
 states, not at a solved realistic load-flow scenario. Dispatch currently includes
 quadratic costs and balance equalities, without line/generation inequalities.
-Maxwell edge elements, a solid torus, nonlinear mechanics, and complete AC OPF
+Maxwell edge elements, nonlinear mechanics, and complete AC OPF
 remain distinct future additions rather than implied coverage.

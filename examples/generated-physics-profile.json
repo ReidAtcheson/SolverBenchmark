@@ -644,6 +644,70 @@
       "encoding": {
         "kind": "real"
       }
+    },
+    {
+      "id": "solid-torus-ref0",
+      "generator": {
+        "id": "volume_diffusion_torus",
+        "parameters": {
+          "major_segments": 8,
+          "minor_segments": 6,
+          "radial_layers": 2,
+          "refinement": 0,
+          "major_radius": 2,
+          "minor_radius": 0.6,
+          "diffusion": 1,
+          "reaction": 0
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "solid-torus-ref1",
+      "generator": {
+        "id": "volume_diffusion_torus",
+        "parameters": {
+          "major_segments": 8,
+          "minor_segments": 6,
+          "radial_layers": 2,
+          "refinement": 1,
+          "major_radius": 2,
+          "minor_radius": 0.6,
+          "diffusion": 1,
+          "reaction": 0
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
     }
   ],
   "solvers": [

@@ -6,7 +6,7 @@ import re
 import sys
 
 DATA_FORMAT = "csr-f64-i32-i64-le"
-GENERATOR_VERSION = "3"
+GENERATOR_VERSION = "4"
 MAX_INDEX = (1 << 31) - 1
 MAX_OFFSET = (1 << 63) - 1
 DEFAULT_MAX_ENTRIES = 5_000_000
@@ -157,7 +157,9 @@ def generate_case(case, *, max_entries=DEFAULT_MAX_ENTRIES):
     else:
         raise ValueError(f"unknown RHS generator: {rhs_id}")
     if dimensions is None:
-        if generator in ("fem_diffusion_square", "fem_diffusion_cube", "surface_diffusion_torus"):
+        if generator == "volume_diffusion_torus":
+            from .volume_torus import build
+        elif generator in ("fem_diffusion_square", "fem_diffusion_cube", "surface_diffusion_torus"):
             from .mesh_problems import build
         elif generator in ("stokes_mac_2d", "darcy_mixed_2d", "elasticity_2d"):
             from .mixed_problems import build

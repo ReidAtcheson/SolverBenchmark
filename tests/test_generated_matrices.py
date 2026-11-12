@@ -53,6 +53,45 @@ class GeneratedTests(unittest.TestCase):
             plus, minus = eval_step(1e-6), eval_step(-1e-6)
             for i in range(4): self.assertAlmostEqual(ac.get((i,j),0), (plus[i]-minus[i])/2e-6, places=8)
 
+    def test_symmetry_metadata_uses_rounded_entries(self):
+        for dimension in (2, 3):
+            parameters = dict(nx=2, ny=2, diffusion=1, velocity_x=1e-16, velocity_y=0)
+            if dimension == 3: parameters.update(nz=2, velocity_z=0)
+            recipe = case(f'convection_diffusion_{dimension}d', parameters)
+            rounded = generate_case(recipe)
+            a = matrix(rounded)
+            self.assertTrue(all(value == a.get((j, i), 0) for (i, j), value in a.items()))
+            self.assertEqual(rounded['matrix']['properties']['symmetric'], 'yes')
+            parameters['velocity_x'] = 1
+            resolved = generate_case(recipe)
+            self.assertNotEqual(matrix(resolved)[0, 1], matrix(resolved)[1, 0])
+            self.assertEqual(resolved['matrix']['properties']['symmetric'], 'no')
+        # A positive resistance may have an unrepresentably small conductance.
+        p = generate_case(case('grid_ac_jacobian', dict(
+            buses=3, resistance=1e-308, reactance=1e308, chord_stride=2)))
+        self.assertEqual(p['matrix']['properties']['symmetric'], 'yes')
+        self.assertGreater(int(p['matrix']['nonzeros']), 0)
+
+    def test_ac_admittance_scaling_and_range(self):
+        for impedance in (1e154, 1e308, 1e-200):
+            with self.subTest(impedance=impedance):
+                p = generate_case(case('grid_ac_jacobian', dict(
+                    buses=3, resistance=impedance, reactance=impedance, chord_stride=2)))
+                a = matrix(p)
+                # Equal r and x give g=b=1/(2*r); bus degree two doubles
+                # each diagonal. Dividing by the expected value tests relative
+                # error, unlike an absolute tolerance that accepts zero here.
+                weight = 0.5/impedance
+                self.assertEqual(len(a), 16)
+                self.assertAlmostEqual(a[0, 0]/(2*weight), 1)
+                self.assertAlmostEqual(a[0, 1]/(-weight), 1)
+                self.assertAlmostEqual(a[0, 2]/(2*weight), 1)
+                self.assertAlmostEqual(a[2, 0]/(-2*weight), 1)
+                self.assertTrue(all(math.isfinite(v) and v != 0 for v in a.values()))
+        with self.assertRaisesRegex(ValueError, 'admittance'):
+            generate_case(case('grid_ac_jacobian', dict(
+                buses=3, resistance=1e-320, reactance=1e-320, chord_stride=2)))
+
     def test_recipes_reproducible_bounded_and_solvable_reference(self):
         recipes = [('convection_diffusion_2d', {'nx':3,'ny':4,'diffusion':1,'velocity_x':2,'velocity_y':-1}),
                    ('helmholtz_2d', {'nx':3,'ny':4,'wavenumber':2}),
