@@ -2,7 +2,6 @@
 // Build this standardized entry point in each solver's own toolchain/runtime.
 #include "runtime.h"
 
-#include <algorithm>
 #include <exception>
 
 namespace solver_benchmark::mockup {
@@ -22,6 +21,7 @@ phase_result_t invoke_phase(worker_session_t& session, trial_id_t trial,
     phase_t phase, callback_t&& callback) {
     // Send progress BEFORE starting the clock. A crash preserves the last phase.
     session.phase_begin(trial, phase);
+    session.trace_phase_begin(trial, phase);
     const bool measured = trial.kind == run_kind_t::measured;
     const auto start = measured ? sample_clocks() : clock_sample_t{};
     phase_result_t result;
@@ -39,6 +39,7 @@ phase_result_t invoke_phase(worker_session_t& session, trial_id_t trial,
         ? std::optional<phase_times_t>{elapsed(start, sample_clocks())}
         : std::nullopt;
     // Serialization and IPC never enter the phase clock interval.
+    session.trace_phase_end(trial, phase);
     session.phase_end(trial, phase, result, times);
     return result;
 }
@@ -46,36 +47,48 @@ phase_result_t invoke_phase(worker_session_t& session, trial_id_t trial,
 phase_status_t run_trial(worker_session_t& session, trial_id_t trial,
     solver_factory_t factory, mapped_problem_t problem) {
     session.trial_begin(trial);
-    std::fill(problem.solution.begin(), problem.solution.end(), scalar_t{0});
+    for (std::size_t j = 0; j < problem.solution.extent(1); ++j) {
+        for (std::size_t i = 0; i < problem.solution.extent(0); ++i) {
+            problem.solution.data_handle()[i * problem.solution.stride(0)
+                + j * problem.solution.stride(1)] = scalar_t{0};
+        }
+    }
     std::unique_ptr<solver_t> solver;
 
     auto result = invoke_phase(session, trial, phase_t::setup, [&] {
         solver = factory();  // Allocation/constructor charged to setup.
         if (!solver) return phase_result_t{phase_status_t::failed, "null solver factory result"};
-        return solver->setup(problem.matrix.info(), session.plan().solver_options);
+        return solver->setup(problem.matrix, session.plan().solver_options);
     });
     if (continues(result.status)) {
+        result = invoke_phase(session, trial, phase_t::pre_analyze,
+            [&] { return solver->pre_analyze(); });
+    }
+    if (continues(result.status)) {
         result = invoke_phase(session, trial, phase_t::analysis,
-            [&] { return solver->analyze(problem.matrix); });
+            [&] { return solver->analyze(); });
     }
     if (continues(result.status)) {
         result = invoke_phase(session, trial, phase_t::numeric,
-            [&] { return solver->numeric(problem.matrix); });
+            [&] { return solver->numeric(); });
     }
     if (continues(result.status)) {
         result = invoke_phase(session, trial, phase_t::solve,
-            [&] { return solver->solve(problem.matrix, problem.rhs, problem.solution); });
+            [&] { return solver->solve(problem.rhs, problem.solution); });
     }
 
     // Cleanup is observable and measured separately, without another solver API
     // phase. A crash/hang here must prevent a successful case classification.
     session.teardown_begin(trial);
+    session.trace_teardown_begin(trial);
     const bool measured = trial.kind == run_kind_t::measured;
     const auto start = measured ? sample_clocks() : clock_sample_t{};
     solver.reset();
-    session.teardown_end(trial, measured
+    const auto teardown_times = measured
         ? std::optional<phase_times_t>{elapsed(start, sample_clocks())}
-        : std::nullopt);
+        : std::nullopt;
+    session.trace_teardown_end(trial);
+    session.teardown_end(trial, teardown_times);
 
     const bool solved = result.status == phase_status_t::success;
     session.trial_complete(trial, result.status, solved);
@@ -91,7 +104,7 @@ int worker_main(int argc, char** argv, solver_factory_t factory) {
             log_worker_error("null solver factory");
             return 2;  // Harness error before handshake, not a solver trial failure.
         }
-        worker_session_t session(argc, argv);  // Handshake + map/validate, untimed.
+        worker_session_t session(argc, argv);  // Handshake/map/validate/start barrier, untimed.
         const auto& plan = session.plan();
         const auto problem = session.problem();
 
@@ -111,6 +124,9 @@ int worker_main(int argc, char** argv, solver_factory_t factory) {
         }
         session.complete(phase_status_t::success);
         return 0;
+    } catch (const instrumentation_unavailable_t& error) {
+        log_worker_error(error.what());
+        return 4;  // Consistent with the session's pre-ready unavailable message.
     } catch (const std::exception& error) {
         log_worker_error(error.what());
         return 2;  // Harness error, never a successful/unsupported completion.

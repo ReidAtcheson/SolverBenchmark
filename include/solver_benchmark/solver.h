@@ -1,7 +1,10 @@
 #pragma once
 
 // Draft, header-only adapter interface. No process or transport dependencies.
-// C++20 is required for std::span. These types NEVER form a wire ABI.
+// C++23 std::mdspan, or C++20 plus the explicit header-only backport in dense.h.
+// These types NEVER form a wire ABI.
+
+#include <solver_benchmark/dense.h>
 
 #include <array>
 #include <cstddef>
@@ -50,10 +53,33 @@ private:
         static_cast<std::size_t>(matrix_property_t::count)> states_{};
 };
 
+enum class attribute_kind_t { exact, lower_bound };
+
+struct scalar_attribute_t {
+    scalar_t value;  // Finite; a signed value, including negative margins.
+    attribute_kind_t kind;
+};
+
+struct matrix_attributes_t {
+    // min_i (abs(a_ii) - sum_{j != i} abs(a_ij)) of the DELIVERED real matrix.
+    // Missing means unknown. An exact positive/zero/negative margin establishes
+    // strict/weak-but-not-strict/non-dominance. A nonpositive lower bound does
+    // not disprove dominance. Assertions can exist without a numerical margin.
+    std::optional<scalar_attribute_t> row_diagonal_dominance_margin;
+};
+
+enum class matrix_encoding_t { real, complex_interleaved };
+
 struct matrix_info_t {
     index_t order = 0;
     offset_t nonzeros = 0;
     matrix_properties_t properties;
+    matrix_attributes_t attributes;
+    matrix_encoding_t encoding = matrix_encoding_t::real;
+    // Required only for complex_interleaved, with order == 2 * complex_order.
+    // a+ib is encoded by the real block [a,-b; b,a], vector [Re0,Im0,...].
+    // All properties/attributes above describe the delivered real matrix.
+    std::optional<index_t> complex_order;
 };
 
 // A borrowed, immutable view of a validated square CSR matrix, with zero-based
@@ -95,7 +121,7 @@ struct solver_options_t {
 
 enum class phase_status_t {
     success,
-    not_applicable,  // No distinct operation; valid for setup/analysis/numeric only.
+    not_applicable,  // No operation; valid for setup/pre_analyze/analysis/numeric only.
     unsupported,    // Declines the problem/configuration, not a failed attempt.
     failed          // Attempted operation failed (singularity, no convergence, ...).
 };
@@ -106,8 +132,9 @@ struct phase_result_t {
     std::optional<std::uint64_t> iterations = std::nullopt;
 };
 
-// One fresh instance per full warm-up or measured repetition. The same matrix
-// is passed to analysis, numeric, and solve. All callbacks must finish their
+// One fresh instance per full warm-up or measured repetition. setup binds the
+// instance to ONE immutable matrix for its lifetime; retain a copy of the view,
+// not a reference to the argument. All callbacks must finish their
 // work (including asynchronous backend work) before returning. Adapters own
 // their conversions, factors, handles, and workspace; allocations count toward
 // whichever phase performs them. Exceptions are caught by the worker; process
@@ -116,25 +143,31 @@ class solver_t {
 public:
     virtual ~solver_t() = default;
 
-    // Metadata only: configure the backend and reject known incompatibilities.
+    // Bind the matrix, configure the backend, reject known incompatibilities.
+    // Full matrix storage remains valid until after destruction. This method
+    // is called exactly once per instance; matrix replacement is unsupported.
     // Factory construction is included in this phase's timing by the worker.
-    virtual phase_result_t setup(const matrix_info_t& matrix,
+    virtual phase_result_t setup(const csr_matrix_view_t& matrix,
         const solver_options_t& options) = 0;
 
-    // Full matrix access starts here. Includes format/index conversion, pattern
-    // analysis, ordering, and any property checks the adapter chooses to do.
-    virtual phase_result_t analyze(const csr_matrix_view_t& matrix) = 0;
+    // Timed input adaptation: CSR/CSC, index width, triangle extraction, complex
+    // reconstruction. Must not perform symbolic analysis/orderings/factorization.
+    virtual phase_result_t pre_analyze() = 0;
+
+    // Symbolic analysis, fill-reducing ordering, algorithmic property checks.
+    virtual phase_result_t analyze() = 0;
 
     // Numerical factorization, preconditioner construction, or equivalent work.
-    virtual phase_result_t numeric(const csr_matrix_view_t& matrix) = 0;
+    virtual phase_result_t numeric() = 0;
 
-    // One contiguous RHS and solution, both of length matrix.info().order.
+    // Rank-2 blocks with shape (bound matrix order, RHS count), RHS count >= 1.
     // RHS is immutable; buffers never alias. The runner initializes solution to
     // zero before each repetition, so iterative solvers get a zero initial guess.
     // Input/solution storage remains valid through destruction. Success means
     // the backend completed; the parent independently decides accuracy acceptance.
-    virtual phase_result_t solve(const csr_matrix_view_t& matrix,
-        std::span<const scalar_t> rhs, std::span<scalar_t> solution) = 0;
+    // Packing/unpacking RHS/solution to native layouts is included in solve.
+    virtual phase_result_t solve(dense_view_t<const scalar_t> rhs,
+        dense_view_t<scalar_t> solution) = 0;
 };
 
 // Invoked locally in the worker. The factory must construct an independent

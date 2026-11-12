@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "name": "laplacian-rhs-widths",
+  "cases": [
+    {
+      "id": "laplacian-1000-rhs1",
+      "generator": {
+        "id": "laplacian_1d",
+        "parameters": {"order": 1000, "diagonal": 2, "off_diagonal": -1},
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_constant_columns",
+          "parameters": {"first_value": 1, "column_increment": 1},
+          "seed": "0"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {"kind": "real"}
+    },
+    {
+      "id": "laplacian-1000-rhs4",
+      "generator": {
+        "id": "laplacian_1d",
+        "parameters": {"order": 1000, "diagonal": 2, "off_diagonal": -1},
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_constant_columns",
+          "parameters": {"first_value": 1, "column_increment": 1},
+          "seed": "0"
+        },
+        "count": 4
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {"kind": "real"}
+    }
+  ],
+  "solvers": [
+    {
+      "id": "candidate-solver",
+      "options": {
+        "thread_limit": 1,
+        "relative_tolerance": 1e-10,
+        "absolute_tolerance": 0,
+        "iteration_limit": "10000"
+      }
+    }
+  ],
+  "passes": [
+    {
+      "id": "timing",
+      "instrumentation": {"kind": "baseline", "collectors": []},
+      "warmup_runs": 1,
+      "measured_runs": 5,
+      "case_timeout_seconds": 300
+    },
+    {
+      "id": "os-trace",
+      "instrumentation": {
+        "kind": "trace",
+        "collectors": ["linux.vm_events", "linux.thread_events", "linux.page_faults"]
+      },
+      "warmup_runs": 1,
+      "measured_runs": 2,
+      "case_timeout_seconds": 300
+    }
+  ]
+}

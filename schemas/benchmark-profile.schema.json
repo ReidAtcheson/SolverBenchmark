@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://solverbenchmark.invalid/schemas/benchmark-profile-1.0.json",
+  "title": "SolverBenchmark profile draft 1.0",
+  "description": "A portable experiment recipe. Software versions, resolved executable paths, host identity, results, and hashes belong in separate manifests.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name", "cases", "solvers", "passes"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 256},
+    "cases": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "#/$defs/case"}
+    },
+    "solvers": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "#/$defs/solver"}
+    },
+    "passes": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "#/$defs/pass"}
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$", "maxLength": 128},
+    "uint64": {
+      "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20,
+      "description": "Canonical decimal uint64; semantic validation also enforces <= 18446744073709551615."
+    },
+    "positive_uint64": {
+      "type": "string", "pattern": "^[1-9][0-9]*$", "maxLength": 20,
+      "description": "Canonical decimal uint64 greater than zero; semantic validation also enforces <= 18446744073709551615."
+    },
+    "generator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "parameters", "seed"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "parameters": {
+          "type": "object",
+          "description": "Validated against the selected generator's parameter schema. All effective parameters must be present; no hidden generator defaults."
+        },
+        "seed": {"$ref": "#/$defs/uint64"}
+      }
+    },
+    "case": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "generator", "rhs", "data_format", "encoding"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "generator": {"$ref": "#/$defs/generator"},
+        "rhs": {
+          "type": "object", "additionalProperties": false,
+          "required": ["generator", "count"],
+          "properties": {
+            "generator": {"$ref": "#/$defs/generator"},
+            "count": {"type": "integer", "minimum": 1, "maximum": 4294967295}
+          }
+        },
+        "data_format": {"const": "csr-f64-i32-i64-le"},
+        "encoding": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {"kind": {"enum": ["real", "complex_interleaved"]}}
+        }
+      }
+    },
+    "solver": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "options"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "options": {
+          "type": "object", "additionalProperties": false,
+          "required": ["thread_limit", "relative_tolerance", "absolute_tolerance", "iteration_limit"],
+          "properties": {
+            "thread_limit": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+            "relative_tolerance": {"type": "number", "minimum": 0},
+            "absolute_tolerance": {"type": "number", "minimum": 0},
+            "iteration_limit": {"$ref": "#/$defs/positive_uint64"}
+          }
+        }
+      }
+    },
+    "pass": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "instrumentation", "warmup_runs", "measured_runs", "case_timeout_seconds"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "warmup_runs": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "measured_runs": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "case_timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "instrumentation": {
+          "oneOf": [
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["kind", "collectors"],
+              "properties": {
+                "kind": {"const": "baseline"},
+                "collectors": {"type": "array", "maxItems": 0}
+              }
+            },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["kind", "collectors"],
+              "properties": {
+                "kind": {"const": "trace"},
+                "collectors": {
+                  "type": "array", "minItems": 1, "uniqueItems": true,
+                  "items": {"$ref": "#/$defs/id"}
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
