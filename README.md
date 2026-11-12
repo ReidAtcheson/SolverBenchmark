@@ -67,12 +67,18 @@ seconds. Repeating the same input path does not count it twice.
 Each matrix comparison has an **absolute timing table** (seconds) and a
 **relative timing table**, with one row per platform/solver configuration and
 columns for setup, pre-analysis, analysis, numeric, solve, teardown, and critical
-path. Relative values divide by the best value in that column across all rows:
+path. Relative timings divide by the best timing in that column across all rows:
 the fastest is **1**, and **1.2** means 20% slower. Tied best values are highlighted.
 Missing values appear as a dash and do not enter the baseline; when the best
 timing is zero, zero ties are 1 and positive timings have an infinite ratio.
 
-Only accuracy-accepted **measured** trials from baseline passes contribute.
+Each solver row also shows its **worst componentwise backward error**: the maximum
+over all RHS columns and measured baseline repetitions across its source outputs,
+including rejected solutions. Warmups and trace passes are excluded. This
+dimensionless error stays absolute in both tables. A dash means no error was
+recorded; infinity preserves infinite errors or failed-verification diagnostics.
+
+Only accuracy-accepted **measured** trials from baseline passes contribute timings.
 Warm-ups and instrumentation passes are excluded. Every phase independently uses
 its **fastest** eligible repetition across matching outputs. The critical path
 is the minimum of **analysis + numeric + solve within a single repetition**,
@@ -81,11 +87,13 @@ pre-analysis, teardown, IPC, and parent validation. Accepted measured trials
 remain eligible even if another trial fails; all execution outcomes are visible
 in the report, and unsuccessful solvers remain present with missing timings.
 
-Comparisons are separated by delivered input hash (including RHS and encoding)
-and accuracy tolerances, so identically named cases with different inputs are
-not mixed. Matching platform and solver configurations pool their repetitions;
-different CPU/OS/host/affinity metadata, solver IDs/options/arguments, worker builds
-or declared runtime dependency hashes, and recorded runtime environments keep separate rows.
+Comparisons are separated by delivered input hash (including RHS and encoding),
+so identically named cases with different inputs are not mixed. Tolerance settings
+remain part of each solver configuration, allowing their achieved errors and
+timings to be compared within the same matrix table. Matching platform and solver
+configurations pool their repetitions; different CPU/OS/host/affinity metadata,
+solver IDs/options/arguments, worker builds or declared runtime dependency hashes,
+and recorded runtime environments keep separate rows.
 Expandable details and source references retain the context for each comparison.
 
 ## Matrix generators

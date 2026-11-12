@@ -3,6 +3,7 @@ import copy
 from html.parser import HTMLParser
 import io
 import json
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -42,9 +43,12 @@ def result(solver='solver-a', *, case='matrix', input_id='a', outcome='success')
     }
 
 
-def add_trial(row, values, *, index=0, kind='measured', accepted=True):
+def add_trial(row, values, *, index=0, kind='measured', accepted=True, errors=None):
     trial = {'kind': kind, 'index': index}
-    row['accuracy'].append({'trial': dict(trial), 'accuracy': {'accepted': accepted}})
+    accuracy = {'accepted': accepted}
+    if errors is not None:
+        accuracy['columns'] = [{'componentwise_backward_error': value} for value in errors]
+    row['accuracy'].append({'trial': dict(trial), 'accuracy': accuracy})
     for phase, value in zip(PHASES, values):
         record = {'trial': dict(trial), 'completed': True,
                   'times': {'wall_seconds': value, 'cpu_seconds': value * 2}}
@@ -62,6 +66,7 @@ class Tables(HTMLParser):
     def __init__(self, html):
         super().__init__()
         self.tables = []
+        self.cells = []
         self.table = self.row = self.cell = None
         self.caption = False
         self.feed(html)
@@ -76,6 +81,9 @@ class Tables(HTMLParser):
             self.row = []
         elif tag in ('td', 'th') and self.row is not None:
             self.cell = ''
+            self.cell_attrs = dict(attrs)
+        elif tag == 'br' and self.cell is not None:
+            self.cell += ' '
 
     def handle_data(self, data):
         if self.caption:
@@ -88,6 +96,7 @@ class Tables(HTMLParser):
             self.caption = False
         elif tag in ('td', 'th') and self.cell is not None:
             self.row.append(self.cell.strip())
+            self.cells.append({'text': self.cell.strip(), 'attrs': self.cell_attrs})
             self.cell = None
         elif tag == 'tr' and self.row is not None:
             self.table['rows'].append(self.row)
@@ -184,15 +193,85 @@ class Reports(unittest.TestCase):
         self.assertEqual(first_a['sources'], [1, 3])
         self.assertEqual(len({row['platform_id'] for row in rows}), 2)
 
-    def test_input_identity_and_accuracy_tolerances_separate_matrices(self):
+    def test_inputs_separate_matrices_and_tolerances_separate_solver_rows(self):
         first = self.output('first', [add_trial(result(), [1] * 6)])
         second = self.output('second', [add_trial(result(input_id='c'), [2] * 6)])
         loose = add_trial(result(), [3] * 6)
         loose['options']['relative_tolerance'] = 1e-3
         third = self.output('third', [loose])
         report = collect_report([first, second, third])
-        self.assertEqual(len(report['matrices']), 3)
+        self.assertEqual(len(report['matrices']), 2)
         self.assertTrue(all(matrix['case_ids'] == ['matrix'] for matrix in report['matrices']))
+        original = next(matrix for matrix in report['matrices']
+                        if matrix['input_hash'] == 'sha256:' + 'a' * 64)
+        self.assertEqual(len(original['rows']), 2)
+        self.assertEqual({row['configuration']['options']['relative_tolerance']
+                          for row in original['rows']}, {1e-10, 1e-3})
+
+    def test_worst_error_includes_rejections_rhs_trials_and_outputs(self):
+        baseline = add_trial(result(outcome='accuracy_failed'), [1] * 6,
+                             errors=[1e-8, 3e-8])
+        add_trial(baseline, [2] * 6, index=1, errors=[5e-8, 2e-8])
+        add_trial(baseline, [0.1] * 6, index=2, accepted=False, errors=[7e-8, 4e-8])
+        add_trial(baseline, [0.01] * 6, kind='warmup', errors=[1000])
+        trace = add_trial(result(), [0.001] * 6, errors=[10000])
+        trace['instrumentation'] = {'kind': 'trace', 'collectors': ['linux.phase_resources']}
+        trace['pass_id'] = 'trace'
+        first = self.output('first', [baseline, trace])
+        second = self.output('second', [add_trial(result(), [3] * 6, errors=[6e-8, 9e-8])])
+
+        first_row = collect_report([first])['matrices'][0]['rows'][0]
+        self.assertEqual(first_row['worst_componentwise_backward_error'], 7e-8)
+        self.assertEqual(first_row['samples'], 2)
+        for metric in ('wall', 'cpu'):
+            with self.subTest(metric=metric):
+                rows = collect_report([first, second], metric=metric)['matrices'][0]['rows']
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]['worst_componentwise_backward_error'], 9e-8)
+                self.assertEqual(rows[0]['samples'], 3)
+
+    def test_error_column_is_raw_dimensionless_for_each_table_and_metric(self):
+        missing = add_trial(result('missing'), [1] * 6, errors=[None])
+        missing['accuracy'][0]['accuracy']['columns'].append({})
+        directory = self.output('errors', [
+            missing,
+            add_trial(result('zero'), [1] * 6, errors=[0]),
+            add_trial(result('finite'), [1] * 6, errors=[1.25e-8]),
+            add_trial(result('infinite', outcome='accuracy_failed'), [1] * 6,
+                      accepted=False, errors=[{'nonfinite': '+inf'}]),
+        ])
+        report_rows = {row['solver']: row for row in collect_report([directory])['matrices'][0]['rows']}
+        self.assertIsNone(report_rows['missing']['worst_componentwise_backward_error'])
+        self.assertEqual(report_rows['zero']['worst_componentwise_backward_error'], 0)
+        self.assertEqual(report_rows['finite']['worst_componentwise_backward_error'], 1.25e-8)
+        self.assertEqual(report_rows['infinite']['worst_componentwise_backward_error'], math.inf)
+        expected = {'missing': '—', 'zero': '0', 'finite': '1.25e-08', 'infinite': '∞'}
+        for metric in ('wall', 'cpu'):
+            with self.subTest(metric=metric):
+                output = self.base / f'{metric}-errors.html'
+                write_report([directory], output, metric=metric)
+                html = output.read_text(encoding='utf-8')
+                self.assertNotIn('Relative tolerance:', html)
+                self.assertNotIn('Absolute tolerance:', html)
+                parsed = Tables(html)
+                self.assertEqual(len(parsed.tables), 2)
+                for table in parsed.tables:
+                    self.assertEqual(' '.join(table['rows'][0][-8].split()),
+                                     'Worst componentwise backward error')
+                    for solver, value in expected.items():
+                        row = next(row for row in table['rows'] if row[1].startswith(solver))
+                        self.assertEqual(row[-8], value)
+                for cell in parsed.cells:
+                    if cell['text'] in expected.values():
+                        self.assertNotIn('seconds', cell['attrs'].get('title', ''))
+
+    def test_invalid_backward_errors_are_rejected(self):
+        for index, value in enumerate((-1, 'invalid', True, {'nonfinite': 'invalid'})):
+            with self.subTest(value=value):
+                row = add_trial(result(), [1] * 6, errors=[value])
+                directory = self.output(f'invalid-error-{index}', [row])
+                with self.assertRaises(ValueError):
+                    collect_report([directory])
 
     def test_solver_configuration_and_worker_builds_remain_distinct(self):
         first = self.output('first', [add_trial(result(), [1] * 6)])

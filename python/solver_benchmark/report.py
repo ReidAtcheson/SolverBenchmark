@@ -119,6 +119,27 @@ def _measurements(result, metric):
     return minima, len(accepted)
 
 
+def _worst_componentwise_backward_error(result):
+    """Include rejected measured solutions so bad accuracy cannot be hidden."""
+    worst = None
+    for record in result.get('accuracy', []):
+        if _trial_index(record) is None:
+            continue
+        accuracy = _object(record.get('accuracy', {}), 'accuracy')
+        for column in accuracy.get('columns', []):
+            value = _object(column, 'accuracy column').get('componentwise_backward_error')
+            if value is None:
+                continue
+            if value == {'nonfinite': '+inf'}:
+                # The validator emits this JSON-safe diagnostic for failed verification.
+                value = math.inf
+            elif type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError('componentwise backward error must be nonnegative '
+                                 'and finite or a tagged +inf diagnostic')
+            worst = value if worst is None else max(worst, value)
+    return worst
+
+
 def _source_paths(inputs):
     paths = []
     for value in inputs:
@@ -135,11 +156,11 @@ def _source_paths(inputs):
 
 
 def collect_report(inputs, metric='wall'):
-    """Pool comparable runs without mixing inputs, accuracy, platforms, or builds.
+    """Pool comparable runs without mixing inputs, solver settings, or platforms.
 
-    A matrix identity includes the delivered matrix/RHS input hash and acceptance
-    tolerances. Rows retain solver options, binary/dependency identity, thread
-    environment, and platform metadata. Only baseline passes contribute timings.
+    Matrix identity is the delivered matrix/RHS input hash. Rows retain all solver
+    options (including tolerances), binary/dependency identity, thread environment,
+    and platform metadata. Only baseline passes contribute timings and errors.
     """
     if metric not in METRICS:
         raise ValueError('metric must be wall or cpu')
@@ -177,10 +198,10 @@ def collect_report(inputs, metric='wall'):
                 for value in accuracy.values():
                     if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                         raise ValueError('accuracy tolerances must be finite and nonnegative')
-                matrix_key = (input_hash, canonical_hash(accuracy))
+                matrix_key = input_hash
                 if matrix_key not in matrices:
                     matrices[matrix_key] = {'case_ids': set(), 'input_hash': input_hash,
-                                            'accuracy': accuracy, 'case': case, 'rows': {}}
+                                            'case': case, 'rows': {}}
                 matrix = matrices[matrix_key]
                 matrix['case_ids'].add(case_id)
                 process = _object(result.get('process', {}), 'process')
@@ -202,10 +223,15 @@ def collect_report(inputs, metric='wall'):
                         'solver': solver, 'configuration': configuration,
                         'configuration_id': configuration_id, 'sources': set(),
                         'outcomes': Counter(), 'samples': 0,
+                        'worst_componentwise_backward_error': None,
                         'times': dict.fromkeys((*PHASES, 'critical_path'))}
                 row = matrix['rows'][row_key]
                 row['sources'].add(source_number)
                 row['outcomes'][_text(result.get('outcome'), 'outcome')] += 1
+                error = _worst_componentwise_backward_error(result)
+                if error is not None and (row['worst_componentwise_backward_error'] is None
+                                         or error > row['worst_componentwise_backward_error']):
+                    row['worst_componentwise_backward_error'] = error
                 times, samples = _measurements(result, timing)
                 row['samples'] += samples
                 for phase, value in times.items():
@@ -223,7 +249,7 @@ def collect_report(inputs, metric='wall'):
             row['sources'] = sorted(row['sources'])
             row['outcomes'] = dict(sorted(row['outcomes'].items()))
     report['matrices'] = sorted(matrices.values(), key=lambda matrix: (
-        matrix['case_ids'], matrix['input_hash'], canonical_hash(matrix['accuracy'])))
+        matrix['case_ids'], matrix['input_hash']))
     return report
 
 

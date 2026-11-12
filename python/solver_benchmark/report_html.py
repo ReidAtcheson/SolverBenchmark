@@ -129,6 +129,14 @@ def _timing_cell(value, best, *, relative, critical):
     return f'<td class="{" ".join(classes)}" title="{_text(tooltip)}">{label}</td>'
 
 
+def _error_cell(value):
+    if value is None:
+        return '<td class="timing missing" title="No measured backward error available">—</td>'
+    label = '∞' if math.isinf(value) else f'{value:.6g}'
+    return (f'<td class="timing" title="Worst measured componentwise backward error '
+            f'(dimensionless): {_text(value)}">{label}</td>')
+
+
 def _table(rows, metric_name, *, relative):
     best = {
         phase: min((row['times'][phase] for row in rows if row['times'][phase] is not None),
@@ -140,13 +148,15 @@ def _table(rows, metric_name, *, relative):
     parts = ['<div class="table-scroll"><table>', f'<caption>{caption}</caption>',
              '<thead><tr><th scope="col">Platform</th>',
              '<th scope="col" class="identity">Solver / configuration</th>',
-             '<th scope="col">Accepted runs</th>']
+             '<th scope="col">Accepted runs</th>',
+             '<th scope="col">Worst componentwise <br>backward error</th>']
     for phase, label in COLUMNS:
         classes = ' class="critical"' if phase == 'critical_path' else ''
         parts.append(f'<th scope="col"{classes}>{label}</th>')
     parts.append('</tr></thead><tbody>')
     for row in rows:
-        parts.extend(('<tr>', _row_identity(row)))
+        parts.extend(('<tr>', _row_identity(row),
+                      _error_cell(row['worst_componentwise_backward_error'])))
         for phase, _ in COLUMNS:
             parts.append(_timing_cell(row['times'][phase], best[phase], relative=relative,
                                       critical=phase == 'critical_path'))
@@ -166,7 +176,7 @@ def render_report(report, title='Solver benchmark report'):
         f'<title>{_text(title)}</title>', f'<style>{_STYLE}</style></head><body><main>',
         '<header><p class="eyebrow">SolverBenchmark</p>', f'<h1>{_text(title)}</h1>',
         '<p class="lead">Compare solver performance across platforms, with one pair of '
-        'timing tables for each matrix input and accuracy requirement.</p>',
+        'timing tables for each matrix input.</p>',
         '<div class="stats">',
         f'<span class="stat"><strong>{len(sources)}</strong> benchmark outputs</span>',
         f'<span class="stat"><strong>{len(matrices)}</strong> matrix comparisons</span>',
@@ -187,8 +197,15 @@ def render_report(report, title='Solver benchmark report'):
         '<strong>1</strong> is best and <strong>1.2</strong> is 20% slower. '
         'A dash means no eligible timing and does not affect the best value. '
         'If the best value is zero, zero ties are 1 and positive values are ∞.</p>',
-        '<p>Input hashes include matrix and RHS data. Different input hashes or '
-        'acceptance tolerances have separate comparisons. Platform and solver '
+        '<p><strong>Worst componentwise backward error</strong> is the maximum over '
+        'all RHS columns and measured baseline repetitions across the listed sources, '
+        'including rejected solutions. Warmups and trace passes are excluded. '
+        'This dimensionless error is shown as an absolute value in both tables; '
+        'it is not normalized. A dash means no error was recorded; ∞ retains an '
+        'infinite error or failed-verification diagnostic.</p>',
+        '<p>Input hashes include matrix and RHS data. Different input hashes '
+        'have separate comparisons. Solver tolerance settings remain in each '
+        'configuration; achieved errors are shown alongside timings. Platform and solver '
         'configuration details identify the measurements being pooled. '
         f'Trace results excluded: <strong>{_text(report["excluded_trace_results"])}</strong>.</p>',
         '</section>',
@@ -198,18 +215,15 @@ def render_report(report, title='Solver benchmark report'):
                      '<p>The supplied outputs contain no baseline result rows to compare.</p></section>')
     for index, matrix in enumerate(matrices, 1):
         names = ', '.join(matrix['case_ids'])
-        accuracy = matrix['accuracy']
         parts.extend((
             f'<section class="matrix" aria-labelledby="matrix-{index}">',
             f'<h2 id="matrix-{index}">{_text(names)}</h2>',
-            f'<p class="matrix-meta">Input <code>{_text(matrix["input_hash"])}</code><br>',
-            f'Relative tolerance: {_text(accuracy.get("relative_tolerance", "unspecified"))} · '
-            f'Absolute tolerance: {_text(accuracy.get("absolute_tolerance", "unspecified"))}</p>',
+            f'<p class="matrix-meta">Input <code>{_text(matrix["input_hash"])}</code></p>',
             _json_details('Matrix and RHS recipe', matrix['case']),
             _table(matrix['rows'], metric_name, relative=False),
             _table(matrix['rows'], metric_name, relative=True),
             '<p class="legend"><span class="swatch" aria-hidden="true"></span>'
-            'Green cells mark the best value, including ties. '
+            'Green cells mark the best timing, including ties. '
             'Values show six significant digits; hover over a timing for its stored value.</p>',
             '</section>',
         ))
