@@ -116,9 +116,7 @@ illustrative placeholders of the required shape, not computed example digests:
     "properties": {
       "symmetric": "yes",
       "structurally_symmetric": "yes",
-      "positive_definite": "yes",
-      "diagonally_dominant": "yes",
-      "strictly_diagonally_dominant": "no"
+      "positive_definite": "yes"
     }
   },
   "dense": {"rows": 3, "columns": 2, "row_stride": "1", "column_stride": "3"},
@@ -188,11 +186,11 @@ property contradictions before exposing typed views. `order + 1`,
 Validate offset monotonicity and ranges before indexing column/value storage.
 Reject malformed data as a protocol/input error, not `unsupported`.
 
-No quantitative diagonal dominance margin is transported. The weak/strict
-three-state assertions remain available; solvers may compute a margin during
-`pre_analyze`. Its cost belongs to reported preparation time, outside the core
-analysis-through-solve total. Mathematical proofs of supplied property assertions
-are not required by the transport; their provenance is recorded by the parent.
+Diagonal dominance is not part of the property vocabulary. Solvers may determine
+it during `pre_analyze`, with its cost reported as preparation outside the core
+analysis-through-solve total. Positive definiteness remains a three-state property.
+Mathematical proofs of supplied assertions are not required by the transport;
+their provenance is recorded by the parent.
 
 ### Interleaved complex encoding
 

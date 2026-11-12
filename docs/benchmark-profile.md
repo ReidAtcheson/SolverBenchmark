@@ -160,9 +160,9 @@ canonical object with required keys `data_format`, `matrix`, and `dense` copied
 from the validated run descriptor: matrix metadata includes order, nonzeros,
 encoding and assertions; dense metadata describes the
 packed column-major RHS shape/strides. In this normalized metadata copy, insert
-the v1 property keys `symmetric`, `structurally_symmetric`, `positive_definite`,
-`diagonally_dominant`, and `strictly_diagonally_dominant`, using `"unknown"` for any omitted key,
-without adding a quantitative attribute object. Preserve supplied unknown property keys and their values
+the v1 property keys `symmetric`, `structurally_symmetric`, and `positive_definite`,
+using `"unknown"` for any omitted key, without adding a quantitative attribute
+object. Preserve supplied unknown property keys and their values
 for hashing even if the receiver cannot use them as mathematical assertions.
 Do not insert defaults for unknown names. Changing these normalization rules
 requires a new input-hash domain version, not receiver-dependent normalization.

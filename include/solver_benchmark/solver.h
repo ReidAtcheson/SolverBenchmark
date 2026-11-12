@@ -32,8 +32,6 @@ enum class matrix_property_t : std::uint8_t {
     symmetric,
     structurally_symmetric,
     positive_definite,
-    diagonally_dominant,
-    strictly_diagonally_dominant,
     count
 };
 

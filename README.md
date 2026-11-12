@@ -167,24 +167,21 @@ instructions. All properties default to `unknown`; absence never means false.
 | `symmetric` | The full numerical matrix equals its transpose. |
 | `structurally_symmetric` | The stored sparsity pattern equals its transpose, including explicit zeros. |
 | `positive_definite` | `xᵀAx > 0` for every nonzero real x. Symmetry is a separate assertion. |
-| `diagonally_dominant` | Every row satisfies `abs(a_ii) >= sum_{j != i} abs(a_ij)`. |
-| `strictly_diagonally_dominant` | Every row satisfies the strict version of that inequality. |
 
 `no` asserts that the property does not hold; `unknown` makes no assertion.
 Assertions must describe the final matrix after canonicalization/rounding, and
-their provenance should be recorded by the parent. The transport validates known
-logical contradictions (for example strict dominance true but weak dominance
-false), not an expensive proof of every mathematical assertion. Solvers may trust
+their provenance should be recorded by the parent. The transport validates metadata
+structure without requiring an expensive proof of every mathematical assertion. Solvers may trust
 assertions, infer additional properties, or decline unknown cases. Numerical
 symmetry alone need not imply stored structural symmetry when explicit zeros
 are present. None of these properties permits omitting a triangle.
 
-The framework exposes weak and strict diagonal dominance as three-state
-assertions, but does not supply a numerical dominance margin. A solver can
-compute that inexpensive derived diagnostic during `pre_analyze` if useful.
-Preparation remains timed and reported separately; it is excluded from the
-analysis-through-solve total. A quantitative property API can be added later
-when there is metadata worth transporting rather than recomputing.
+Diagonal dominance is not exposed as metadata, either as an assertion or as a
+numerical margin. Solvers can cheaply determine it during `pre_analyze` if useful;
+that preparation remains timed separately from the analysis-through-solve total.
+Positive definiteness remains a three-state assertion: it is expensive to establish
+in general and often known from the problem's construction. A quantitative
+property API can be added later for information worth transporting.
 
 ## Complex systems using real storage
 
