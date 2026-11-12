@@ -1,10 +1,11 @@
-"""Collect baseline measurements from benchmark artifacts for offline HTML reports."""
+"""Collect baseline measurements for matching HTML and machine-readable reports."""
 from __future__ import annotations
 
 from collections import Counter
 import json
 import math
 from pathlib import Path
+import tempfile
 
 from .profiles import canonical_hash, load_json
 from .report_html import render_report
@@ -165,7 +166,22 @@ def collect_report(inputs, metric='wall'):
     if metric not in METRICS:
         raise ValueError('metric must be wall or cpu')
     timing = METRICS[metric]
-    report = {'metric': timing, 'sources': [], 'matrices': [], 'excluded_trace_results': 0}
+    report = {
+        'schema_version': '1.0', 'report_type': 'solver-benchmark-comparison',
+        'metric': timing, 'sources': [], 'matrices': [], 'excluded_trace_results': 0,
+        'aggregation': {
+            'pass_kind': 'baseline', 'trial_kind': 'measured',
+            'timings': {'accuracy_accepted_only': True, 'phase_reduction': 'minimum',
+                        'critical_path': {'phases': list(CORE_PHASES),
+                                          'reduction': 'minimum_of_same_trial_sum'}},
+            'relative_times': {
+                'baseline': 'minimum_per_matrix_column_across_all_rows',
+                'zero_best': {'zero_value': 1, 'positive_value': {'nonfinite': '+inf'}}},
+            'worst_componentwise_backward_error': {
+                'reduction': 'maximum_over_rhs_trials_and_sources',
+                'includes_rejected_trials': True},
+        },
+    }
     matrices = {}
     for path in _source_paths(inputs):
         try:
@@ -178,7 +194,7 @@ def collect_report(inputs, metric='wall'):
             deployment = _object(execution.get('deployment', {}), 'deployment').get('solvers', {})
             _object(deployment, 'deployment solvers')
             source_number = len(report['sources']) + 1
-            report['sources'].append({'path': str(path), 'run_id': run_id})
+            report['sources'].append({'id': source_number, 'path': str(path), 'run_id': run_id})
             count = 0
             for result in _results(path):
                 count += 1
@@ -245,22 +261,76 @@ def collect_report(inputs, metric='wall'):
         matrix['case_ids'] = sorted(matrix['case_ids'])
         matrix['rows'] = sorted(matrix['rows'].values(), key=lambda row: (
             row['platform'], row['platform_id'], row['solver'], row['configuration_id']))
+        matrix['best_times'] = {
+            phase: min((row['times'][phase] for row in matrix['rows']
+                        if row['times'][phase] is not None), default=None)
+            for phase in (*PHASES, 'critical_path')}
         for row in matrix['rows']:
             row['sources'] = sorted(row['sources'])
             row['outcomes'] = dict(sorted(row['outcomes'].items()))
+            row['relative_times'] = {}
+            for phase, value in row['times'].items():
+                best = matrix['best_times'][phase]
+                row['relative_times'][phase] = (
+                    None if value is None else
+                    1.0 if value == best else
+                    math.inf if best == 0 else value / best)
     report['matrices'] = sorted(matrices.values(), key=lambda matrix: (
         matrix['case_ids'], matrix['input_hash']))
     return report
 
 
+def _json_safe(value):
+    """Preserve missing values and encode nonfinite diagnostics as strict JSON."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return {'nonfinite': 'nan' if math.isnan(value) else '+inf' if value > 0 else '-inf'}
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def write_report(inputs, output, metric='wall', title='Solver benchmark report'):
-    """Write a standalone HTML file without changing any benchmark artifact."""
+    """Write HTML and sibling JSON from one summary; return both output paths."""
     paths = _source_paths(inputs)
     output = Path(output)
-    protected = {path for path in paths}
-    protected.update(path.parent / name for path in paths for name in METADATA_FILES)
-    if output.resolve() in protected:
+    json_output = output.with_suffix('.json')
+    destinations = (output, json_output)
+    if output.resolve() == json_output.resolve():
+        raise ValueError('HTML and JSON report paths must be different; use --output report.html')
+    protected = {path.resolve() for path in paths}
+    protected.update((path.parent / name).resolve() for path in paths for name in METADATA_FILES)
+    if any(path.resolve() in protected for path in destinations):
         raise ValueError('report output must not overwrite benchmark input artifacts')
-    html = render_report(collect_report(paths, metric), title=title)
+    for path in destinations:
+        if path.exists() and not path.is_file():
+            raise ValueError(f'report output must be a file: {path}')
+    if json_output.exists():
+        try:
+            previous = load_json(json_output)
+        except (ValueError, OSError) as exc:
+            raise ValueError(f'JSON destination is not an existing comparison report: {json_output}') from exc
+        if not isinstance(previous, dict) or previous.get('report_type') != 'solver-benchmark-comparison' \
+                or previous.get('schema_version') != '1.0':
+            raise ValueError(f'JSON destination is not an existing comparison report: {json_output}')
+    report = collect_report(paths, metric)
+    report['title'] = title
+    contents = (render_report(report, title=title),
+                json.dumps(_json_safe(report), indent=2, ensure_ascii=False, allow_nan=False) + '\n')
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(html, encoding='utf-8')
+    # Prepare both files before replacing existing reports; a serialization/write
+    # failure must not leave a newly written HTML file paired with old JSON.
+    staged = []
+    try:
+        for content in contents:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=output.parent,
+                                             prefix='.solver-report-', suffix='.tmp', delete=False) as stream:
+                staged.append(Path(stream.name))
+                stream.write(content)
+        for temporary, destination in zip(staged, destinations):
+            temporary.replace(destination)
+    finally:
+        for temporary in staged:
+            temporary.unlink(missing_ok=True)
+    return destinations

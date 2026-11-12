@@ -111,6 +111,11 @@ class Reports(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.base = Path(self.directory.name)
 
+    def read_report_json(self, path):
+        def reject_constant(value):
+            self.fail(f'report contains nonstandard JSON constant: {value}')
+        return json.loads(path.read_text(encoding='utf-8'), parse_constant=reject_constant)
+
     def output(self, name, rows, *, host=None, orchestrator='one', worker_build=None,
                arguments=None):
         directory = self.base / name
@@ -312,6 +317,77 @@ class Reports(unittest.TestCase):
         output = self.base / 'trace.html'
         write_report([directory], output)
         self.assertIn('No baseline results', output.read_text(encoding='utf-8'))
+        exported = self.read_report_json(output.with_suffix('.json'))
+        self.assertEqual(exported['matrices'], [])
+        self.assertEqual(exported['excluded_trace_results'], 1)
+        self.assertEqual(exported['sources'][0]['id'], 1)
+
+    def test_json_preserves_precision_and_matches_html_for_each_metric(self):
+        precise_time = 0.12345678901234567
+        precise_error = 2.345678901234567e-12
+        directory = self.output('precision', [
+            add_trial(result('best'), [0.1] * 6, errors=[0.5e-12]),
+            add_trial(result('precise'), [precise_time] * 6, errors=[precise_error]),
+        ])
+        for metric, scale in (('wall', 1), ('cpu', 2)):
+            with self.subTest(metric=metric):
+                output = self.base / f'{metric}-precision.html'
+                paths = write_report([directory], output, metric=metric, title='Precision report')
+                self.assertEqual(paths, (output, output.with_suffix('.json')))
+                exported = self.read_report_json(paths[1])
+                self.assertEqual(exported['schema_version'], '1.0')
+                self.assertEqual(exported['report_type'], 'solver-benchmark-comparison')
+                self.assertTrue(exported['aggregation'])
+                matrix = exported['matrices'][0]
+                precise = next(row for row in matrix['rows'] if row['solver'] == 'precise')
+                self.assertEqual(precise['times']['analysis'], precise_time * scale)
+                self.assertNotEqual(precise['times']['analysis'], float(f'{precise_time * scale:.6g}'))
+                self.assertEqual(precise['worst_componentwise_backward_error'], precise_error)
+                self.assertEqual(matrix['best_times']['analysis'], 0.1 * scale)
+                self.assertEqual(precise['relative_times']['analysis'],
+                                 (precise_time * scale) / (0.1 * scale))
+                self.assertEqual(set(matrix['best_times']), set(TIMINGS))
+                self.assertEqual(set(precise['relative_times']), set(TIMINGS))
+                tables = Tables(paths[0].read_text(encoding='utf-8')).tables
+                self.assertEqual(len(tables), 2)
+                for table, key in zip(tables, ('times', 'relative_times')):
+                    for json_row in matrix['rows']:
+                        html_row = next(row for row in table['rows']
+                                        if row[1].startswith(json_row['solver']))
+                        self.assertEqual(html_row[-7:], [f'{json_row[key][phase]:.6g}'
+                                                         for phase in TIMINGS])
+                original = paths[1].read_bytes()
+                write_report([directory], output, metric=metric, title='Precision report')
+                self.assertEqual(paths[1].read_bytes(), original)
+
+    def test_json_uses_null_for_missing_and_tags_for_infinities(self):
+        directory = self.output('nonfinite', [
+            add_trial(result('zero'), [0] * 6, errors=[0]),
+            add_trial(result('positive'), [1] * 6, errors=[1e-12]),
+            add_trial(result('failed', outcome='accuracy_failed'), [1] * 6,
+                      accepted=False, errors=[{'nonfinite': '+inf'}]),
+            result('unavailable', outcome='unsupported'),
+        ])
+        output = self.base / 'nonfinite.html'
+        write_report([directory], output)
+        exported = self.read_report_json(output.with_suffix('.json'))
+        matrix = exported['matrices'][0]
+        rows = {row['solver']: row for row in matrix['rows']}
+        self.assertEqual(matrix['best_times'], dict.fromkeys(TIMINGS, 0))
+        self.assertEqual(rows['zero']['relative_times'], dict.fromkeys(TIMINGS, 1))
+        self.assertEqual(rows['positive']['relative_times'],
+                         dict.fromkeys(TIMINGS, {'nonfinite': '+inf'}))
+        self.assertEqual(rows['failed']['worst_componentwise_backward_error'], {'nonfinite': '+inf'})
+        self.assertEqual(rows['failed']['outcomes'], {'accuracy_failed': 1})
+        self.assertEqual(rows['failed']['times'], dict.fromkeys(TIMINGS))
+        self.assertEqual(rows['failed']['relative_times'], dict.fromkeys(TIMINGS))
+        self.assertIsNone(rows['unavailable']['worst_componentwise_backward_error'])
+        relative = next(table for table in Tables(output.read_text(encoding='utf-8')).tables
+                        if table['caption'].startswith('Relative'))
+        positive = next(row for row in relative['rows'] if row[1].startswith('positive'))
+        failed = next(row for row in relative['rows'] if row[1].startswith('failed'))
+        self.assertEqual(positive[-7:], ['∞'] * 7)
+        self.assertEqual(failed[-8:], ['∞', *(['—'] * 7)])
 
     def test_duplicate_measured_phases_are_rejected(self):
         row = add_trial(result(), [1] * 6)
@@ -417,6 +493,7 @@ class Reports(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn('error:', errors.getvalue())
         self.assertFalse(output.exists())
+        self.assertFalse(output.with_suffix('.json').exists())
 
     def test_report_cannot_overwrite_source_artifacts(self):
         directory = self.output('run', [add_trial(result(), [1] * 6)])
@@ -428,11 +505,55 @@ class Reports(unittest.TestCase):
                     write_report([directory], path)
                 self.assertEqual(path.read_bytes(), original)
 
+    def test_sidecar_cannot_overwrite_metadata_or_alias_html(self):
+        directory = self.output('run', [add_trial(result(), [1] * 6)])
+        for filename in ('profile.json', 'execution.json', 'version-manifest.json'):
+            with self.subTest(filename=filename):
+                metadata = directory / filename
+                original = metadata.read_bytes()
+                output = metadata.with_suffix('.html')
+                with self.assertRaises(ValueError):
+                    write_report([directory], output)
+                self.assertEqual(metadata.read_bytes(), original)
+                self.assertFalse(output.exists())
+
+        same_path = self.base / 'report.json'
+        with self.assertRaises(ValueError):
+            write_report([directory], same_path)
+        self.assertFalse(same_path.exists())
+
+        output = self.base / 'aliased.html'
+        output.write_text('existing report', encoding='utf-8')
+        sidecar = output.with_suffix('.json')
+        sidecar.symlink_to(output)
+        with self.assertRaises(ValueError):
+            write_report([directory], output)
+        self.assertEqual(output.read_text(encoding='utf-8'), 'existing report')
+        self.assertTrue(sidecar.is_symlink())
+
+    def test_sidecar_preserves_benchmark_summary_and_unrelated_json(self):
+        directory = self.output('run', [add_trial(result(), [1] * 6)])
+        cases = [
+            (directory / 'summary.json', {'outcomes': {'success': 1}, 'execution_count': 1}),
+            (self.base / 'unrelated.json', {'measurements': [1, 2, 3]}),
+        ]
+        for sidecar, contents in cases:
+            with self.subTest(sidecar=sidecar.name):
+                original_json = json.dumps(contents, indent=2).encode('utf-8') + b'\n'
+                sidecar.write_bytes(original_json)
+                output = sidecar.with_suffix('.html')
+                original_html = b'<html>Existing analysis</html>\n'
+                output.write_bytes(original_html)
+                with self.assertRaises(ValueError):
+                    write_report([directory], output)
+                self.assertEqual(sidecar.read_bytes(), original_json)
+                self.assertEqual(output.read_bytes(), original_html)
+
     def test_cli_writes_cpu_report_from_multiple_inputs(self):
         first = self.output('first', [add_trial(result(), [1] * 6)])
         second = self.output('second', [add_trial(result('solver-b'), [2] * 6)])
         output = self.base / 'cli.html'
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()) as messages:
             code = main(['report', str(first), str(second / 'results.jsonl'),
                          '--output', str(output), '--metric', 'cpu', '--title', 'CPU comparison'])
         self.assertEqual(code, 0)
@@ -440,6 +561,19 @@ class Reports(unittest.TestCase):
         self.assertIn('CPU comparison', html)
         self.assertIn('solver-a', html)
         self.assertIn('solver-b', html)
+        sidecar = output.with_suffix('.json')
+        exported = self.read_report_json(sidecar)
+        self.assertEqual(exported['title'], 'CPU comparison')
+        self.assertEqual(exported['metric'], 'cpu_seconds')
+        self.assertEqual([source['id'] for source in exported['sources']], [1, 2])
+        self.assertEqual([source['run_id'] for source in exported['sources']], ['first', 'second'])
+        rows = {row['solver']: row for row in exported['matrices'][0]['rows']}
+        self.assertEqual(rows['solver-a']['sources'], [1])
+        self.assertEqual(rows['solver-b']['sources'], [2])
+        self.assertEqual(rows['solver-b']['times']['analysis'], 4)
+        self.assertEqual(rows['solver-b']['relative_times']['analysis'], 2)
+        self.assertIn(str(output), messages.getvalue())
+        self.assertIn(str(sidecar), messages.getvalue())
 
 
 if __name__ == '__main__':

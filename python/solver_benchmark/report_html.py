@@ -110,7 +110,7 @@ def _row_identity(row):
     )
 
 
-def _timing_cell(value, best, *, relative, critical):
+def _timing_cell(value, best, ratio, *, relative, critical):
     classes = ['timing']
     if critical:
         classes.append('critical')
@@ -121,7 +121,6 @@ def _timing_cell(value, best, *, relative, critical):
         if value == best:
             classes.append('best')
         if relative:
-            ratio = 1.0 if value == best else math.inf if best == 0 else value / best
             label = '∞' if math.isinf(ratio) else f'{ratio:.6g}'
             tooltip = f'{value!r} seconds / column best {best!r} seconds'
         else:
@@ -137,12 +136,8 @@ def _error_cell(value):
             f'(dimensionless): {_text(value)}">{label}</td>')
 
 
-def _table(rows, metric_name, *, relative):
-    best = {
-        phase: min((row['times'][phase] for row in rows if row['times'][phase] is not None),
-                   default=None)
-        for phase, _ in COLUMNS
-    }
+def _table(matrix, metric_name, *, relative):
+    rows, best = matrix['rows'], matrix['best_times']
     caption = ('Relative timings — ratio to column best' if relative
                else f'Absolute timings — {metric_name} in seconds')
     parts = ['<div class="table-scroll"><table>', f'<caption>{caption}</caption>',
@@ -158,7 +153,8 @@ def _table(rows, metric_name, *, relative):
         parts.extend(('<tr>', _row_identity(row),
                       _error_cell(row['worst_componentwise_backward_error'])))
         for phase, _ in COLUMNS:
-            parts.append(_timing_cell(row['times'][phase], best[phase], relative=relative,
+            parts.append(_timing_cell(row['times'][phase], best[phase], row['relative_times'][phase],
+                                      relative=relative,
                                       critical=phase == 'critical_path'))
         parts.append('</tr>')
     parts.append('</tbody></table></div>')
@@ -220,8 +216,8 @@ def render_report(report, title='Solver benchmark report'):
             f'<h2 id="matrix-{index}">{_text(names)}</h2>',
             f'<p class="matrix-meta">Input <code>{_text(matrix["input_hash"])}</code></p>',
             _json_details('Matrix and RHS recipe', matrix['case']),
-            _table(matrix['rows'], metric_name, relative=False),
-            _table(matrix['rows'], metric_name, relative=True),
+            _table(matrix, metric_name, relative=False),
+            _table(matrix, metric_name, relative=True),
             '<p class="legend"><span class="swatch" aria-hidden="true"></span>'
             'Green cells mark the best timing, including ties. '
             'Values show six significant digits; hover over a timing for its stored value.</p>',

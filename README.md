@@ -48,15 +48,27 @@ For an offline build, CMake's `FETCHCONTENT_SOURCE_DIR_MDSPAN`,
 matching pinned source trees. Use the same Python environment for CTest and the
 CLI; select it with `-DPython3_EXECUTABLE=/absolute/path/to/python` if necessary.
 
-## HTML comparison reports
+## HTML and JSON comparison reports
 
-Collect any number of benchmark output directories into one self-contained HTML
-file. No web server, JavaScript, or external assets are needed to view or share it:
+Collect any number of benchmark output directories into matching reports: a
+self-contained HTML file for people and a structured JSON summary for agents and
+scripts. No web server, JavaScript, or external assets are needed to view the HTML:
 
 ```sh
 solver-benchmark report results/local-001 results/local-002 \
     --output reports/comparison.html
 ```
+
+This writes `reports/comparison.html` and `reports/comparison.json` from the same
+aggregated data, including the same column baselines and relative timing ratios.
+The JSON preserves full numeric precision, matrix/platform/solver identities,
+configuration details, worst backward errors, accepted sample counts, execution
+outcomes, and source references. Missing values are `null`; infinite values use
+`{"nonfinite": "+inf"}` rather than nonstandard JSON numbers. The versioned
+[JSON report format](docs/report-format.md) describes the fields and aggregation
+rules. Changing the HTML filename also changes the sibling JSON filename.
+An existing JSON file is replaced only if it is a comparison report in this
+format; collisions with benchmark artifacts or unrelated JSON files are errors.
 
 Inputs may also be `results.jsonl` paths, with `execution.json`, `profile.json`,
 and `version-manifest.json` alongside them. The report reads these artifacts;
