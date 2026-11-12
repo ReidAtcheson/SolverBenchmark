@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.24)
+project(ExternalDiagonalWorker LANGUAGES CXX)
+find_package(SolverBenchmark CONFIG REQUIRED)
+add_executable(diagonal-worker main.cpp)
+target_link_libraries(diagonal-worker PRIVATE SolverBenchmark::worker)
