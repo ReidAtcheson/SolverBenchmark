@@ -118,12 +118,23 @@ def main(argv=None):
     run=sub.add_parser('run'); run.add_argument('profile'); run.add_argument('--deployment',required=True)
     run.add_argument('--output',required=True); run.add_argument('--max-entries',type=int,default=5_000_000)
     check=sub.add_parser('validate'); check.add_argument('profile')
+    report=sub.add_parser('report', help='compare benchmark outputs in matching HTML and JSON reports')
+    report.add_argument('inputs', nargs='+', help='benchmark directories or results.jsonl files')
+    report.add_argument('--output', required=True, help='destination HTML file; also writes a sibling .json file')
+    report.add_argument('--metric', choices=('wall', 'cpu'), default='wall')
+    report.add_argument('--title', default='Solver benchmark report')
     args=parser.parse_args(argv)
     try:
         if args.command=='validate':
             profile=validate_profile(load_json(args.profile))
             for case in profile['cases']: generate_case(case)
             print(canonical_hash(profile)); return 0
+        if args.command=='report':
+            from .report import write_report
+            outputs = write_report(args.inputs, args.output, metric=args.metric, title=args.title)
+            for output in outputs:
+                print(f'Report written to {output}')
+            return 0
         if args.max_entries < 1: raise ValueError('--max-entries must be positive')
         return execute(args.profile,args.deployment,args.output,args.max_entries)
     except Exception as exc:
