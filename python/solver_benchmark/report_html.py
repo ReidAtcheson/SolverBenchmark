@@ -1,0 +1,223 @@
+"""Render collected benchmark timings as a self-contained, offline HTML report."""
+from __future__ import annotations
+
+from html import escape
+import json
+import math
+
+
+COLUMNS = (
+    ('setup', 'Setup'),
+    ('pre_analyze', 'Pre-analysis'),
+    ('analysis', 'Analysis'),
+    ('numeric', 'Numeric'),
+    ('solve', 'Solve'),
+    ('teardown', 'Teardown'),
+    ('critical_path', 'Critical path'),
+)
+
+_STYLE = """
+:root { color-scheme: light; --ink: #182737; --muted: #526575;
+  --line: #dce4eb; --accent: #075f56; --best: #e5f5ef; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f3f6f8; color: var(--ink);
+  font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+main { max-width: 1720px; margin: auto; padding: 40px 28px 64px; }
+h1, h2, h3, p { margin-top: 0; }
+h1 { font-size: clamp(28px, 4vw, 42px); line-height: 1.2; margin-bottom: 12px; }
+h2 { font-size: 23px; margin-bottom: 8px; overflow-wrap: anywhere; }
+h3 { font-size: 17px; margin-bottom: 10px; }
+.eyebrow { color: var(--accent); text-transform: uppercase; font-size: 12px;
+  font-weight: 750; letter-spacing: .12em; margin-bottom: 10px; }
+.lead { color: var(--muted); max-width: 1000px; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0 28px; }
+.stat { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; }
+.method, .matrix, .sources { background: #fff; border: 1px solid var(--line);
+  border-radius: 10px; margin: 22px 0; padding: 24px; }
+.method p:last-child, .sources p:last-child { margin-bottom: 0; }
+.muted, small { color: var(--muted); }
+.matrix-meta { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; margin-bottom: 12px; }
+details { margin: 8px 0; }
+summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0 0;
+  padding: 12px; background: #f6f8fa; border-radius: 5px; font-size: 12px; line-height: 1.45; }
+code { font-size: .9em; overflow-wrap: anywhere; }
+.table-scroll { overflow-x: auto; margin-top: 22px; }
+table { border-collapse: collapse; width: 100%; min-width: 1120px; font-size: 13px; }
+caption { text-align: left; font-size: 17px; font-weight: 650; color: var(--ink); padding-bottom: 10px; }
+th, td { padding: 12px 10px; border-bottom: 1px solid var(--line); text-align: right; vertical-align: top; }
+thead th { background: #edf2f5; font-weight: 650; white-space: nowrap; }
+th:first-child, td:first-child, .identity { text-align: left; }
+tbody th { font-weight: 500; }
+.platform { min-width: 180px; max-width: 280px; overflow-wrap: anywhere; }
+.identity { min-width: 200px; max-width: 320px; overflow-wrap: anywhere; }
+.identity strong, .identity small, .platform small { display: block; }
+.identity details, .platform details { font-weight: 400; }
+.identity pre, .platform pre { min-width: 200px; max-width: 320px; }
+.timing { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.best { background: var(--best); color: #075449; font-weight: 700; }
+.missing { color: #778795; }
+.critical { border-left: 2px solid var(--line); }
+.legend { margin: 10px 0 0; color: var(--muted); font-size: 12px; }
+.swatch { display: inline-block; width: 10px; height: 10px; margin-right: 5px;
+  background: var(--best); border: 1px solid #b9dfd1; }
+a { color: var(--accent); }
+.sources ol { padding-left: 24px; margin-bottom: 0; }
+.sources li { margin-bottom: 12px; overflow-wrap: anywhere; }
+.sources li:last-child { margin-bottom: 0; }
+@media (max-width: 700px) { main { padding: 24px 12px; }
+  .method, .matrix, .sources { padding: 16px; } }
+@media print { body { background: #fff; } main { max-width: none; padding: 0; }
+  .method, .matrix, .sources { border-radius: 0; padding: 12px; }
+  .table-scroll { overflow: visible; } table { min-width: 0; font-size: 9px; }
+  th, td { padding: 6px 4px; } .platform, .identity { min-width: 0; }
+  thead { display: table-header-group; } tr { break-inside: avoid; }
+  .best { print-color-adjust: exact; } }
+"""
+
+
+def _text(value):
+    return escape(str(value), quote=True)
+
+
+def _json_details(label, value):
+    return (f'<details><summary>{_text(label)}</summary>'
+            f'<pre>{_text(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False))}</pre>'
+            '</details>')
+
+
+def _short_id(value):
+    return str(value).removeprefix('sha256:')[:10]
+
+
+def _row_identity(row):
+    sources = ', '.join(
+        f'<a href="#source-{_text(index)}">{_text(index)}</a>'
+        for index in row['sources'])
+    outcomes = ', '.join(f'{name}: {count}' for name, count in sorted(row['outcomes'].items()))
+    return (
+        '<td class="platform">'
+        f'{_text(row["platform"])}'
+        f'<small>Platform {_text(_short_id(row["platform_id"]))}</small>'
+        f'{_json_details("Platform details", row["host"])}'
+        '</td><th scope="row" class="identity">'
+        f'<strong>{_text(row["solver"])}</strong>'
+        f'<small>Configuration {_text(_short_id(row["configuration_id"]))}</small>'
+        f'<small>Sources: {sources}</small>'
+        f'<small>{_text(outcomes)}</small>'
+        f'{_json_details("Solver configuration", row["configuration"])}'
+        f'</th><td class="timing">{_text(row["samples"])}</td>'
+    )
+
+
+def _timing_cell(value, best, *, relative, critical):
+    classes = ['timing']
+    if critical:
+        classes.append('critical')
+    if value is None:
+        classes.append('missing')
+        label, tooltip = '—', 'No accepted measured timing'
+    else:
+        if value == best:
+            classes.append('best')
+        if relative:
+            ratio = 1.0 if value == best else math.inf if best == 0 else value / best
+            label = '∞' if math.isinf(ratio) else f'{ratio:.6g}'
+            tooltip = f'{value!r} seconds / column best {best!r} seconds'
+        else:
+            label, tooltip = f'{value:.6g}', f'{value!r} seconds'
+    return f'<td class="{" ".join(classes)}" title="{_text(tooltip)}">{label}</td>'
+
+
+def _table(rows, metric_name, *, relative):
+    best = {
+        phase: min((row['times'][phase] for row in rows if row['times'][phase] is not None),
+                   default=None)
+        for phase, _ in COLUMNS
+    }
+    caption = ('Relative timings — ratio to column best' if relative
+               else f'Absolute timings — {metric_name} in seconds')
+    parts = ['<div class="table-scroll"><table>', f'<caption>{caption}</caption>',
+             '<thead><tr><th scope="col">Platform</th>',
+             '<th scope="col" class="identity">Solver / configuration</th>',
+             '<th scope="col">Accepted runs</th>']
+    for phase, label in COLUMNS:
+        classes = ' class="critical"' if phase == 'critical_path' else ''
+        parts.append(f'<th scope="col"{classes}>{label}</th>')
+    parts.append('</tr></thead><tbody>')
+    for row in rows:
+        parts.extend(('<tr>', _row_identity(row)))
+        for phase, _ in COLUMNS:
+            parts.append(_timing_cell(row['times'][phase], best[phase], relative=relative,
+                                      critical=phase == 'critical_path'))
+        parts.append('</tr>')
+    parts.append('</tbody></table></div>')
+    return '\n'.join(parts)
+
+
+def render_report(report, title='Solver benchmark report'):
+    """Return an HTML document; every benchmark-supplied string is escaped."""
+    metric_name = 'wall time' if report['metric'] == 'wall_seconds' else 'CPU time'
+    matrices = report['matrices']
+    sources = report['sources']
+    parts = [
+        '<!doctype html>', '<html lang="en"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f'<title>{_text(title)}</title>', f'<style>{_STYLE}</style></head><body><main>',
+        '<header><p class="eyebrow">SolverBenchmark</p>', f'<h1>{_text(title)}</h1>',
+        '<p class="lead">Compare solver performance across platforms, with one pair of '
+        'timing tables for each matrix input and accuracy requirement.</p>',
+        '<div class="stats">',
+        f'<span class="stat"><strong>{len(sources)}</strong> benchmark outputs</span>',
+        f'<span class="stat"><strong>{len(matrices)}</strong> matrix comparisons</span>',
+        f'<span class="stat">Metric: <strong>{metric_name}</strong></span>',
+        '</div></header>',
+        '<section class="method" aria-labelledby="method-title">',
+        '<h2 id="method-title">How to read this report</h2>',
+        '<p>Only accepted measured trials from baseline passes contribute timings. '
+        'Warmup runs and trace passes are excluded. Each phase shows its fastest '
+        'eligible repetition across the listed sources; different phases may come '
+        'from different repetitions. Earlier accepted trials remain eligible if '
+        'a later trial fails; execution outcomes are shown beside each solver.</p>',
+        '<p><strong>Critical path</strong> is the fastest same-trial sum of '
+        '<strong>analysis + numeric + solve</strong>. It excludes setup, pre-analysis, '
+        'teardown, IPC, and parent validation. It is not a sum of independent phase minima.</p>',
+        '<p>Relative timings divide each value by the best value in that column across '
+        'all solver and platform rows in the same matrix comparison: '
+        '<strong>1</strong> is best and <strong>1.2</strong> is 20% slower. '
+        'A dash means no eligible timing and does not affect the best value. '
+        'If the best value is zero, zero ties are 1 and positive values are ∞.</p>',
+        '<p>Input hashes include matrix and RHS data. Different input hashes or '
+        'acceptance tolerances have separate comparisons. Platform and solver '
+        'configuration details identify the measurements being pooled. '
+        f'Trace results excluded: <strong>{_text(report["excluded_trace_results"])}</strong>.</p>',
+        '</section>',
+    ]
+    if not matrices:
+        parts.append('<section class="matrix"><h2>No baseline results</h2>'
+                     '<p>The supplied outputs contain no baseline result rows to compare.</p></section>')
+    for index, matrix in enumerate(matrices, 1):
+        names = ', '.join(matrix['case_ids'])
+        accuracy = matrix['accuracy']
+        parts.extend((
+            f'<section class="matrix" aria-labelledby="matrix-{index}">',
+            f'<h2 id="matrix-{index}">{_text(names)}</h2>',
+            f'<p class="matrix-meta">Input <code>{_text(matrix["input_hash"])}</code><br>',
+            f'Relative tolerance: {_text(accuracy.get("relative_tolerance", "unspecified"))} · '
+            f'Absolute tolerance: {_text(accuracy.get("absolute_tolerance", "unspecified"))}</p>',
+            _json_details('Matrix and RHS recipe', matrix['case']),
+            _table(matrix['rows'], metric_name, relative=False),
+            _table(matrix['rows'], metric_name, relative=True),
+            '<p class="legend"><span class="swatch" aria-hidden="true"></span>'
+            'Green cells mark the best value, including ties. '
+            'Values show six significant digits; hover over a timing for its stored value.</p>',
+            '</section>',
+        ))
+    parts.extend(('<section class="sources" aria-labelledby="sources-title">',
+                  '<h2 id="sources-title">Benchmark sources</h2>',
+                  '<p class="muted">Source numbers in each row refer to these collected outputs.</p><ol>'))
+    for index, source in enumerate(sources, 1):
+        parts.append(f'<li id="source-{index}"><code>{_text(source["path"])}</code><br>'
+                     f'<small>Run ID: {_text(source["run_id"])}</small></li>')
+    parts.extend(('</ol></section>', '</main></body></html>'))
+    return '\n'.join(parts) + '\n'

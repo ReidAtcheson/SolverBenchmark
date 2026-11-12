@@ -48,6 +48,46 @@ For an offline build, CMake's `FETCHCONTENT_SOURCE_DIR_MDSPAN`,
 matching pinned source trees. Use the same Python environment for CTest and the
 CLI; select it with `-DPython3_EXECUTABLE=/absolute/path/to/python` if necessary.
 
+## HTML comparison reports
+
+Collect any number of benchmark output directories into one self-contained HTML
+file. No web server, JavaScript, or external assets are needed to view or share it:
+
+```sh
+solver-benchmark report results/local-001 results/local-002 \
+    --output reports/comparison.html
+```
+
+Inputs may also be `results.jsonl` paths, with `execution.json`, `profile.json`,
+and `version-manifest.json` alongside them. The report reads these artifacts;
+workers and the original input arrays are not needed. `--title` customizes the
+heading, and `--metric cpu` selects CPU seconds instead of the default wall
+seconds. Repeating the same input path does not count it twice.
+
+Each matrix comparison has an **absolute timing table** (seconds) and a
+**relative timing table**, with one row per platform/solver configuration and
+columns for setup, pre-analysis, analysis, numeric, solve, teardown, and critical
+path. Relative values divide by the best value in that column across all rows:
+the fastest is **1**, and **1.2** means 20% slower. Tied best values are highlighted.
+Missing values appear as a dash and do not enter the baseline; when the best
+timing is zero, zero ties are 1 and positive timings have an infinite ratio.
+
+Only accuracy-accepted **measured** trials from baseline passes contribute.
+Warm-ups and instrumentation passes are excluded. Every phase independently uses
+its **fastest** eligible repetition across matching outputs. The critical path
+is the minimum of **analysis + numeric + solve within a single repetition**,
+not the sum of independently selected phase minima. It excludes setup,
+pre-analysis, teardown, IPC, and parent validation. Accepted measured trials
+remain eligible even if another trial fails; all execution outcomes are visible
+in the report, and unsuccessful solvers remain present with missing timings.
+
+Comparisons are separated by delivered input hash (including RHS and encoding)
+and accuracy tolerances, so identically named cases with different inputs are
+not mixed. Matching platform and solver configurations pool their repetitions;
+different CPU/OS/host/affinity metadata, solver IDs/options/arguments, worker builds
+or declared runtime dependency hashes, and recorded runtime environments keep separate rows.
+Expandable details and source references retain the context for each comparison.
+
 ## Matrix generators
 
 The initial generators discretize **negative Laplacian `-Δ`**, with homogeneous

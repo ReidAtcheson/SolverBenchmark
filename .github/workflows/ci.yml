@@ -16,6 +16,7 @@ jobs:
       - run: cmake --build build -j2
       - run: ctest --test-dir build --output-on-failure
       - run: solver-benchmark run examples/benchmark-profile.json --deployment examples/deployment.json --output results/ci
+      - run: solver-benchmark report results/ci --output results/report.html
       - uses: actions/upload-artifact@v4
         if: always()
         with:
