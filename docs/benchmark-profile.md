@@ -88,7 +88,7 @@ runner does not reconstruct allocation lifetimes or produce a merged event timel
 
 ## Matrix and RHS generators
 
-The three Laplacian generators have strict parameter sets:
+The baseline Laplacian generators have strict parameter sets:
 
 | ID | Required parameters |
 | --- | --- |
@@ -108,10 +108,10 @@ symmetry, structural symmetry, and positive definiteness. It does not advertise
 diagonal dominance.
 
 For example, `mx=3, dx=0.5` gives diagonal 8 and adjacent entries -4. Anisotropic
-2D/3D grids use separate weights for each spacing. The stencil/indexing code can
-be reused for a future Helmholtz shift `-Delta - k²I`; wavenumber, shifts, alternative
-boundary conditions, and indefinite generators are **not accepted yet**. Such a
-generator must revise the positive-definiteness metadata appropriately.
+2D/3D grids use separate weights for each spacing. Additional transport, Helmholtz, refined mesh, mixed-physics and electric-grid
+generators are specified in the [generated matrix catalog](generated-matrices.md).
+Each generator has its own strict parameter set and matrix-property assertions;
+Laplacian recipes still reject wavenumbers and other extra parameters.
 
 `encoding.kind: complex_interleaved` expands the generated real operator as a
 complex operator with zero imaginary part. It doubles delivered order and stored
@@ -126,9 +126,20 @@ For complex encoding this sets both the real and imaginary component to that val
 Products use binary64 arithmetic and each row is accumulated with Python `math.fsum`,
 then stored as binary64. No reference solution is sent to a worker.
 
-All four generators are deterministic and ignore the seed numerically, but require
-an explicit canonical uint64 decimal-string seed. Changing a seed changes the recipe
-hash even when these deterministic generators produce identical input bytes.
+`manufactured_seeded_columns` requires `offset` and positive `amplitude`.
+It fills each reference column with `offset + amplitude * (2*u - 1)` from one
+SplitMix64 stream, in column-major order. The stream starts from the RHS seed,
+adds `0x9E3779B97F4A7C15` before each output, applies the standard xor-shift/
+multiply mixing steps, and maps its upper 53 bits to `[0,1)`. Matrix and RHS
+seeds are independent. Different columns have different entries; these inputs
+exercise more modes than proportional constant columns. RHS formation uses the
+same binary64 products and `math.fsum` rule as the constant recipe.
+
+Every recipe requires a canonical uint64 decimal-string seed. Laplacians and
+constant RHS recipes ignore it numerically; mesh and grid recipes document their
+seed behavior. Changing a seed always changes the recipe hash, even for a
+seed-independent generator. Floating-point geometry can differ in its last bits
+across platforms; input hashes, rather than seeds alone, identify identical bytes.
 
 ## Validation before execution
 

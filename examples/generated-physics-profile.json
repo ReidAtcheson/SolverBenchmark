@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "name": "generated-physics-suite",
+  "name": "generated-physics-and-grid-suite",
   "cases": [
     {
       "id": "advection",
@@ -17,14 +17,14 @@
       },
       "rhs": {
         "generator": {
-          "id": "manufactured_constant_columns",
+          "id": "manufactured_seeded_columns",
           "parameters": {
-            "first_value": 1,
-            "column_increment": 1
+            "offset": 0,
+            "amplitude": 1
           },
-          "seed": "0"
+          "seed": "123"
         },
-        "count": 1
+        "count": 3
       },
       "data_format": "csr-f64-i32-i64-le",
       "encoding": {
@@ -44,14 +44,14 @@
       },
       "rhs": {
         "generator": {
-          "id": "manufactured_constant_columns",
+          "id": "manufactured_seeded_columns",
           "parameters": {
-            "first_value": 1,
-            "column_increment": 1
+            "offset": 0,
+            "amplitude": 1
           },
-          "seed": "0"
+          "seed": "123"
         },
-        "count": 1
+        "count": 3
       },
       "data_format": "csr-f64-i32-i64-le",
       "encoding": {
@@ -70,14 +70,14 @@
       },
       "rhs": {
         "generator": {
-          "id": "manufactured_constant_columns",
+          "id": "manufactured_seeded_columns",
           "parameters": {
-            "first_value": 1,
-            "column_increment": 1
+            "offset": 0,
+            "amplitude": 1
           },
-          "seed": "0"
+          "seed": "123"
         },
-        "count": 1
+        "count": 3
       },
       "data_format": "csr-f64-i32-i64-le",
       "encoding": {
@@ -97,14 +97,14 @@
       },
       "rhs": {
         "generator": {
-          "id": "manufactured_constant_columns",
+          "id": "manufactured_seeded_columns",
           "parameters": {
-            "first_value": 1,
-            "column_increment": 1
+            "offset": 0,
+            "amplitude": 1
           },
-          "seed": "0"
+          "seed": "123"
         },
-        "count": 1
+        "count": 3
       },
       "data_format": "csr-f64-i32-i64-le",
       "encoding": {
@@ -125,14 +125,520 @@
       },
       "rhs": {
         "generator": {
-          "id": "manufactured_constant_columns",
+          "id": "manufactured_seeded_columns",
           "parameters": {
-            "first_value": 1,
-            "column_increment": 1
+            "offset": 0,
+            "amplitude": 1
           },
-          "seed": "0"
+          "seed": "123"
         },
-        "count": 1
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "transport-3d",
+      "generator": {
+        "id": "convection_diffusion_3d",
+        "parameters": {
+          "nx": 7,
+          "ny": 6,
+          "nz": 5,
+          "diffusion": 0.01,
+          "velocity_x": 1,
+          "velocity_y": -0.5,
+          "velocity_z": 0.25
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "wave-3d-indefinite",
+      "generator": {
+        "id": "helmholtz_3d",
+        "parameters": {
+          "nx": 7,
+          "ny": 6,
+          "nz": 5,
+          "wavenumber": 12
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "stokes-mac",
+      "generator": {
+        "id": "stokes_mac_2d",
+        "parameters": {
+          "nx": 8,
+          "ny": 6,
+          "viscosity": 0.01
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "darcy-high-contrast",
+      "generator": {
+        "id": "darcy_mixed_2d",
+        "parameters": {
+          "nx": 8,
+          "ny": 6,
+          "permeability": 1,
+          "contrast": 10000
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "elasticity",
+      "generator": {
+        "id": "elasticity_2d",
+        "parameters": {
+          "nx": 7,
+          "ny": 6,
+          "lame_lambda": 1,
+          "lame_mu": 1
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "elasticity-nearly-incompressible",
+      "generator": {
+        "id": "elasticity_2d",
+        "parameters": {
+          "nx": 7,
+          "ny": 6,
+          "lame_lambda": 1000,
+          "lame_mu": 1
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "fem-square-ref0",
+      "generator": {
+        "id": "fem_diffusion_square",
+        "parameters": {
+          "cells": 3,
+          "refinement": 0,
+          "jitter": 0.12,
+          "diffusion": 1,
+          "reaction": 0
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "fem-cube-ref0",
+      "generator": {
+        "id": "fem_diffusion_cube",
+        "parameters": {
+          "cells": 3,
+          "refinement": 0,
+          "jitter": 0.12,
+          "diffusion": 1,
+          "reaction": 0
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "torus-ref0",
+      "generator": {
+        "id": "surface_diffusion_torus",
+        "parameters": {
+          "major_segments": 10,
+          "minor_segments": 8,
+          "refinement": 0,
+          "major_radius": 2,
+          "minor_radius": 0.6,
+          "diffusion": 1,
+          "reaction": 0.1
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "fem-square-ref1",
+      "generator": {
+        "id": "fem_diffusion_square",
+        "parameters": {
+          "cells": 3,
+          "refinement": 1,
+          "jitter": 0.12,
+          "diffusion": 1,
+          "reaction": 0
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "fem-cube-ref1",
+      "generator": {
+        "id": "fem_diffusion_cube",
+        "parameters": {
+          "cells": 3,
+          "refinement": 1,
+          "jitter": 0.12,
+          "diffusion": 1,
+          "reaction": 0
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "torus-ref1",
+      "generator": {
+        "id": "surface_diffusion_torus",
+        "parameters": {
+          "major_segments": 10,
+          "minor_segments": 8,
+          "refinement": 1,
+          "major_radius": 2,
+          "minor_radius": 0.6,
+          "diffusion": 1,
+          "reaction": 0.1
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "geographic-dc-radial",
+      "generator": {
+        "id": "geographic_grid_dc",
+        "parameters": {
+          "buses": 80,
+          "mesh_fraction": 0,
+          "reactance": 0.1,
+          "impedance_spread": 0.6,
+          "tap_spread": 0.03
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "geographic-ac-radial",
+      "generator": {
+        "id": "geographic_grid_ac",
+        "parameters": {
+          "buses": 80,
+          "mesh_fraction": 0,
+          "reactance": 0.1,
+          "impedance_spread": 0.6,
+          "tap_spread": 0.03,
+          "resistance": 0.02,
+          "pv_fraction": 0.2,
+          "angle_scale": 0.05,
+          "voltage_spread": 0.03,
+          "phase_shift": 0.01,
+          "charging": 0.02
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "geographic-dc-meshed",
+      "generator": {
+        "id": "geographic_grid_dc",
+        "parameters": {
+          "buses": 80,
+          "mesh_fraction": 0.7,
+          "reactance": 0.1,
+          "impedance_spread": 0.6,
+          "tap_spread": 0.03
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "geographic-ac-meshed",
+      "generator": {
+        "id": "geographic_grid_ac",
+        "parameters": {
+          "buses": 80,
+          "mesh_fraction": 0.7,
+          "reactance": 0.1,
+          "impedance_spread": 0.6,
+          "tap_spread": 0.03,
+          "resistance": 0.02,
+          "pv_fraction": 0.2,
+          "angle_scale": 0.05,
+          "voltage_spread": 0.03,
+          "phase_shift": 0.01,
+          "charging": 0.02
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "grid-dispatch-kkt",
+      "generator": {
+        "id": "grid_dc_opf_kkt",
+        "parameters": {
+          "buses": 80,
+          "mesh_fraction": 0.7,
+          "reactance": 0.1,
+          "impedance_spread": 0.6,
+          "tap_spread": 0.03,
+          "generation_cost": 1
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 3
       },
       "data_format": "csr-f64-i32-i64-le",
       "encoding": {

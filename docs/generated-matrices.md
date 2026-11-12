@@ -1,48 +1,131 @@
-# Generated physics matrices
+# Generated physics and electric-grid matrices
 
-`examples/generated-physics-profile.json` is a runnable profile using these
-self-contained generators. Recipes specify every parameter, use no files or
-object storage, and are deterministic. Seeds are currently validated but not
-used. Each matrix uses a manufactured constant solution and RHS `b = A x`;
-this tests linear algebra, not the fidelity of a physical simulation. All
-parameters are required; sizes and physical coefficients must be positive
-except velocities, which are finite signed numbers.
+The [example profile](../examples/generated-physics-profile.json) contains 22
+cases from 16 generator families. Together with the original 1D/2D/3D Laplacians,
+these cover scalar transport and waves, refined volume and surface finite
+elements, incompressible flow, porous flow, elasticity, and electrical networks.
+All inputs are generated locally from explicit parameters and seeds. No mesh
+files, object storage, matrix downloads, or additional Python dependencies are
+required.
 
-| Generator | Parameters | Model and classification |
+```sh
+solver-benchmark validate examples/generated-physics-profile.json
+solver-benchmark run examples/generated-physics-profile.json \
+  --deployment examples/deployment.json --output results/generated-physics
+```
+
+The profile includes coarse/refined square, cube, and torus cases; radial and
+meshed electrical networks; high permeability contrast; and a large Lamé ratio.
+Every case uses three independently varying, seeded manufactured solution
+columns with `b = A x`. The parent validates residuals against the delivered
+matrix. These are linear solver benchmarks: manufactured RHSs are not physical
+loads or a substitute for discretization verification.
+
+## Coverage
+
+| Generator | Physical model / discretization | Matrix class |
 | --- | --- | --- |
-| `convection_diffusion_2d` | `nx`, `ny`, `diffusion`, `velocity_x`, `velocity_y` | Unit square, zero Dirichlet boundary, five-point diffusion and first-order upwind advection. Generally nonsymmetric. |
-| `helmholtz_2d` | `nx`, `ny`, `wavenumber` | Unit square, zero Dirichlet boundary, `-Δ - k²`. Symmetric and potentially indefinite or singular, depending on the chosen wavenumber and mesh. |
-| `triangular_fem_poisson` | `nx`, `ny` | Linear triangular finite elements on a deterministically perturbed square mesh with alternating diagonals; homogeneous Dirichlet boundary. Symmetric positive definite. Sizes count interior nodes. |
-| `grid_dc_power_flow` | `buses`, `reactance`, `chord_stride` | Reduced DC power-flow susceptance matrix with bus 0 as slack, unit taps, and uniform positive line reactance. Symmetric positive definite. |
-| `grid_ac_jacobian` | `buses`, `resistance`, `reactance`, `chord_stride` | Polar AC power-injection Jacobian at flat voltage, bus 0 slack, all remaining buses PQ, no shunts or transformers. Generally nonsymmetric. |
+| `convection_diffusion_2d`, `convection_diffusion_3d` | Centered diffusion plus first-order upwind transport on a unit box | Generally nonsymmetric |
+| `helmholtz_2d`, `helmholtz_3d` | `-Δ - k²`, unit box, homogeneous Dirichlet | Symmetric; indefinite for the example wavenumbers |
+| `triangular_fem_poisson` | P1 Poisson on a perturbed triangular square mesh | SPD |
+| `fem_diffusion_square` | Seeded perturbed triangular mesh, midpoint refinement, diffusion/reaction | SPD |
+| `fem_diffusion_cube` | Seeded perturbed tetrahedral mesh, midpoint refinement, diffusion/reaction | SPD |
+| `surface_diffusion_torus` | Intrinsic surface diffusion plus positive mass term on a closed torus | SPD |
+| `stokes_mac_2d` | Staggered velocity/pressure, no-slip boundary, pressure gauge removed | Symmetric indefinite |
+| `darcy_mixed_2d` | Mixed face-flux/cell-pressure system, heterogeneous permeability | Symmetric indefinite |
+| `elasticity_2d` | P1 plane-strain displacement FEM with clamped boundary | SPD, including a stiff nearly incompressible case |
+| `grid_dc_power_flow` | Uniform path/chord network, grounded DC susceptance | SPD |
+| `grid_ac_jacobian` | Uniform path/chord network, flat-start all-PQ polar Jacobian | Generally nonsymmetric |
+| `geographic_grid_dc` | Seeded local geographic tree plus loops, heterogeneous lines and taps | SPD |
+| `geographic_grid_ac` | Non-flat polar Newton Jacobian, PV/PQ buses, taps, phase shifts, charging | Generally nonsymmetric |
+| `grid_dc_opf_kkt` | Equality-constrained quadratic DC dispatch optimality system | Symmetric indefinite |
 
-Both grid models use a connected path on buses `0..buses-1` plus edges
-`(i, i + chord_stride)`, with `2 <= chord_stride < buses`. They are synthetic
-network models, not a reconstruction of a real grid or statistically realistic
-synthetic network. The AC operating point is a flat-start linearization, not a
-solved power-flow case; no load, generation, or voltage-limit data are modeled.
-Its block form is `[B G; -G B]`, with grounded graph Laplacians weighted by
-`x/(r²+x²)` and `r/(r²+x²)`, respectively. This is a special case of the
-standard AC power-balance Jacobian. DC uses branch weights `1/x`.
+Full equations, node/unknown ordering, boundary conditions, exact parameters,
+resource bounds, and sources are in:
 
-`complex_interleaved` expands these real matrices into independent real and
-imaginary components; it does not introduce complex coefficients. Properties
-are conservative: Helmholtz definiteness is unknown, and nonsymmetric operators
-are not classified as positive definite. For comparability, input hashes include
-actual matrix bytes, and the version manifest identifies generator source.
+- [Refined mesh generators](mesh-generators.md)
+- [Mixed physics and elasticity generators](mixed-generators.md)
+- [Geographic electric-grid generators](grid-generators.md)
 
-## Research and scope
+## Structured and initial generators
 
-The choices cover distinct numerical mechanisms: transport, wave propagation,
-unstructured finite-element connectivity, and electrical networks. The
-[MATPOWER DC formulation](https://matpower.org/docs/ref/matpower7.1/lib/makeBdc.html)
-defines the susceptance matrix and its `1/x` branch weights; its
-[AC power-flow documentation](https://matpower.app/manual/matpower/ACPowerFlow.html)
-describes the reduced Newton Jacobian and bus types. The
-[SynGrid manual](https://matpower.org/docs/SynGrid-manual-1.0.pdf) describes
-more realistic synthetic grid construction, which this small topology generator
-does not attempt. The [FEniCS Stokes example](https://docs.fenicsproject.org/dolfinx/v0.7.2/python/demos/demo_stokes.html)
-illustrates another valuable class, mixed saddle-point systems, which is not
-yet included. Future extensions could add stable Stokes or elasticity elements,
-three-dimensional and curved meshes, realistic synthetic grids, transformer and
-PV bus models, and non-flat AC operating points.
+All parameters below are required. `nx`, `ny`, and `nz` are positive integer
+interior-node counts. Physical coefficients are positive finite binary64;
+velocities are signed finite numbers. `convection_diffusion_*` uses grid spacing
+`1/(n+1)` along each axis and x-fastest ordering. Its off-diagonal neighbor weights
+are `-diffusion/h² - max(±velocity,0)/h`; the diagonal includes the eliminated
+Dirichlet boundary contributions. Helmholtz uses the same unit-box centered
+Laplacian minus `wavenumber² I`.
+
+| Generator | Parameters |
+| --- | --- |
+| `convection_diffusion_2d` | `nx`, `ny`, `diffusion`, `velocity_x`, `velocity_y` |
+| `convection_diffusion_3d` | `nx`, `ny`, `nz`, `diffusion`, `velocity_x`, `velocity_y`, `velocity_z` |
+| `helmholtz_2d` | `nx`, `ny`, `wavenumber` |
+| `helmholtz_3d` | `nx`, `ny`, `nz`, `wavenumber` |
+| `triangular_fem_poisson` | `nx`, `ny` |
+| `grid_dc_power_flow` | `buses`, `reactance`, `chord_stride` |
+| `grid_ac_jacobian` | `buses`, `resistance`, `reactance`, `chord_stride` |
+
+The initial triangular generator uses alternating cell diagonals, fixed interior
+coordinate perturbations, exact P1 stiffness, and eliminated Dirichlet nodes.
+Use `fem_diffusion_square` for seeded meshes and actual refinement.
+
+The initial grid models use a path `0..buses-1` plus edges `(i,i+chord_stride)`,
+where `buses >= 3` and `2 <= chord_stride < buses`. Bus 0 is slack. DC weights
+are `1/reactance`. AC uses uniform positive resistance and reactance, no shunts
+or transformers, flat voltage, and all non-slack buses PQ. In angle/magnitude
+ordering its Jacobian is `[B G; -G B]`, where the two grounded Laplacians have
+weights `x/(r²+x²)` and `r/(r²+x²)`. These initial generators ignore the seed.
+Use the geographic generators for heterogeneous and non-flat cases.
+
+## Scaling, reproducibility, and interpretation
+
+Increase mesh refinement to grow a fixed coarse geometry; increase grid cell
+counts or bus counts to grow other problems. Change viscosity, advection speed,
+wavenumber, permeability contrast, Lamé ratio, or electrical parameters to vary
+numerical difficulty. P1 displacement elasticity can lock at large Lamé ratios;
+this is a conditioning stress case, not a claim of robust incompressible accuracy.
+Helmholtz can be singular at discrete resonances; its metadata therefore leaves
+positive definiteness unknown. Indefinite saddle-point cases explicitly report
+`positive_definite: no`.
+
+`max_entries` bounds CSR entries, dense elements, and generator-specific
+conservative assembly estimates before large allocation. Mesh contribution
+bounds can reject a recipe even if the final CSR would fit. This prevents a
+small matrix hiding very expensive intermediate mesh assembly. It is a local
+execution limit, never a silent change to the recipe. The generators are intended
+for moderate local benchmarks; Python assembly itself is outside worker timings.
+
+The matrix seed and RHS seed are independent. Seeded RHSs use the specified
+SplitMix64 stream in the [profile contract](benchmark-profile.md); mesh and grid
+seed behavior is documented in their own catalogs. Input hashes identify actual
+wire bytes, and manifests hash every generator module. Floating-point geometry
+may differ in its last bits across platforms. `complex_interleaved` duplicates
+these real operators into real/imaginary components; none of these recipes
+introduces nonzero imaginary matrix coefficients.
+
+## Research basis and limits
+
+[MFEM's example catalog](https://mfem.org/examples/) demonstrates why elasticity,
+Darcy, and scalar diffusion deserve separate solver tests: their unknown spaces
+and block structures differ. Our discretizations are compact implementations
+of the equations documented here, rather than wrappers around MFEM. The mixed
+and mesh notes link their particular discretization references and independent
+checks.
+
+[MATPOWER Technical Note 2](https://matpower.org/docs/TN2-OPF-Derivatives.pdf)
+provides the AC power-injection derivative framework; the grid tests check the
+result against derivatives of independently assembled branch currents. The
+[SynGrid manual](https://matpower.org/docs/SynGrid-manual-1.0.pdf) describes a more
+ambitious statistically informed grid-generation process. Our geographic tree
+and loop model supplies varied sparse topology and standard electrical equations,
+but does not claim those statistical or operational realism guarantees.
+
+The mesh cases use conforming perturbed simplicial partitions, not Delaunay
+triangulation. The cube is a 3D volume and the torus is a 2D closed surface
+embedded in 3D. The grid Jacobians are evaluated at explicitly generated voltage
+states, not at a solved realistic load-flow scenario. Dispatch currently includes
+quadratic costs and balance equalities, without line/generation inequalities.
+Maxwell edge elements, a solid torus, nonlinear mechanics, and complete AC OPF
+remain distinct future additions rather than implied coverage.

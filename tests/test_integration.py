@@ -47,3 +47,26 @@ class EndToEnd(unittest.TestCase):
             for case in profile['cases']:
                 identity=json.loads((output/'inputs'/case['id']/'identity.json').read_text())
                 self.assertTrue(identity['reference_hash'].startswith('sha256:'))
+
+    def test_generated_physics_profile(self):
+        profile=json.loads((ROOT/'examples/generated-physics-profile.json').read_text())
+        for measure in profile['passes']:
+            measure['warmup_runs']=0
+            measure['measured_runs']=1
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory)
+            recipe=base/'profile.json'; recipe.write_text(json.dumps(profile))
+            deployment=base/'deployment.json'
+            deployment.write_text(json.dumps({'schema_version':'1.0','solvers':{'eigen-sparse-lu':{
+                'executable':str(Path(WORKER).resolve()),'arguments':[],'environment':{}}}}))
+            output=base/'results'
+            self.assertEqual(execute(recipe,deployment,output),0)
+            summary=json.loads((output/'summary.json').read_text())
+            self.assertEqual(summary['outcomes'],{'success':len(profile['cases'])*len(profile['passes'])})
+            rows=[json.loads(line) for line in (output/'results.jsonl').read_text().splitlines()]
+            for row in rows:
+                with self.subTest(case=row['case_id'], mode=row['pass_id']):
+                    self.assertEqual(row['outcome'], 'success')
+                    self.assertEqual(len(row['summary']['accepted_measured_samples']),1)
+                    self.assertTrue(all(a['accuracy']['accepted'] for a in row['accuracy']))
+                    if row['instrumentation']['kind']=='trace': self.assertTrue(row['trace_complete'])

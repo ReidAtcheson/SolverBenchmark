@@ -3,7 +3,7 @@ from array import array
 import math
 
 
-def build(generator, p, limit):
+def build(generator, p, limit, seed="0", *, max_order=(1 << 31)-1):
     def integer(k, minimum=1):
         v = p[k]
         if isinstance(v, bool) or not isinstance(v, int) or v < minimum:
@@ -23,6 +23,8 @@ def build(generator, p, limit):
     specs = {
         'convection_diffusion_2d': ('nx', 'ny', 'diffusion', 'velocity_x', 'velocity_y'),
         'helmholtz_2d': ('nx', 'ny', 'wavenumber'),
+        'convection_diffusion_3d': ('nx', 'ny', 'nz', 'diffusion', 'velocity_x', 'velocity_y', 'velocity_z'),
+        'helmholtz_3d': ('nx', 'ny', 'nz', 'wavenumber'),
         'grid_dc_power_flow': ('buses', 'reactance', 'chord_stride'),
         'grid_ac_jacobian': ('buses', 'resistance', 'reactance', 'chord_stride'),
         'triangular_fem_poisson': ('nx', 'ny'),
@@ -39,32 +41,41 @@ def build(generator, p, limit):
         bound = 20 * n
     else:
         nx, ny = integer('nx'), integer('ny')
-        order = nx * ny
+        nz = integer('nz') if generator.endswith('3d') else 1
+        order = nx * ny * nz
         bound = 9 * order
-    if order > (1 << 31) - 1 or order > limit or bound > limit:
+    if order > max_order or order > limit or bound > limit:
         raise ValueError(f'case exceeds local max_entries={limit}')
     rows = [dict() for _ in range(order)]
     def add(i, j, v):
         rows[i][j] = rows[i].get(j, 0.0) + v
-    if generator in ('convection_diffusion_2d', 'helmholtz_2d'):
-        if generator == 'convection_diffusion_2d':
-            diffusion = number('diffusion', 0); vx = number('velocity_x'); vy = number('velocity_y')
+    if generator.startswith(('convection_diffusion_', 'helmholtz_')):
+        transport = generator.startswith('convection_diffusion_')
+        sizes = [nx, ny] + ([nz] if generator.endswith('3d') else [])
+        if transport:
+            diffusion = number('diffusion', 0)
+            velocities = [number('velocity_' + axis) for axis in 'xyz'[:len(sizes)]]
             shift = 0
         else:
-            diffusion = 1; vx = vy = 0; k = number('wavenumber', 0); shift = k * k
-        hx, hy = 1 / (nx + 1), 1 / (ny + 1)
-        for y in range(ny):
-            for x in range(nx):
-                i = y * nx + x
-                diag = -shift
-                for c, m, step, h, v in ((x, nx, 1, hx, vx), (y, ny, nx, hy, vy)):
-                    w = diffusion / h**2
-                    diag += 2*w + abs(v)/h
-                    if c: add(i, i-step, -w-max(v, 0)/h)
-                    if c+1 < m: add(i, i+step, -w-max(-v, 0)/h)
-                add(i, i, diag)
-        props = {'symmetric': 'no' if vx or vy else 'yes', 'structurally_symmetric': 'yes',
-                 'positive_definite': 'yes' if generator == 'convection_diffusion_2d' and not (vx or vy) else 'unknown'}
+            diffusion = 1
+            velocities = [0] * len(sizes)
+            k = number('wavenumber', 0)
+            shift = k * k
+        strides = [1, nx, nx * ny]
+        for i in range(order):
+            diag = -shift
+            for m, step, v in zip(sizes, strides, velocities):
+                c, h = (i // step) % m, 1 / (m + 1)
+                w = diffusion / h**2
+                if not math.isfinite(w) or w <= 0:
+                    raise ValueError('diffusion weights must be positive finite binary64')
+                diag += 2*w + abs(v)/h
+                if c: add(i, i-step, -w-max(v, 0)/h)
+                if c+1 < m: add(i, i+step, -w-max(-v, 0)/h)
+            add(i, i, diag)
+        asymmetric = any(v and m > 1 for m, v in zip(sizes, velocities))
+        props = {'symmetric': 'no' if asymmetric else 'yes', 'structurally_symmetric': 'yes',
+                 'positive_definite': 'yes' if transport and not asymmetric else 'unknown'}
     elif generator == 'triangular_fem_poisson':
         # Two linear triangles per cell, Dirichlet nodes eliminated. An alternating
         # diagonal gives a non-Cartesian adjacency without external meshing tools.
