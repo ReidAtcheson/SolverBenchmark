@@ -126,7 +126,7 @@ def version_manifest(workers):
         'schema_version': '1.0', 'protocol_version': '1.0',
         'orchestrator': {'version': '0.1.0', 'source_hashes': {
             p.name: file_hash(p) for p in sorted(directory.glob('*.py'))}},
-        'generator_contract': 'dirichlet-negative-laplacian-v1',
+        'generator_contract': 'generated-matrices-v5',
         'profile_schema_hash': file_hash(directory / 'benchmark-profile.schema.json'),
         'python': sys.version,
         'dependencies': {name: importlib.metadata.version(name) for name in ('jsonschema', 'rfc8785')},

@@ -265,3 +265,7 @@ timeouts, invalid protocol messages, and separate tracing passes. GitHub Actions
 builds on Linux x86_64 and ARM64; CI results establish coverage beyond the local
 machine. Functional worker code is in `src/`; parent orchestration is in
 `python/solver_benchmark/`. The original mockup has been replaced.
+
+Additional self-contained physics and synthetic electric-grid generators are
+listed in [Generated physics matrices](docs/generated-matrices.md), with a
+ready-to-run profile in [examples/generated-physics-profile.json](examples/generated-physics-profile.json).
