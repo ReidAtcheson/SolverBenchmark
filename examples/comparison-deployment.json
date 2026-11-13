@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "solvers": {
+    "eigen-sparse-lu": {
+      "executable": "../build/sb-eigen",
+      "arguments": [],
+      "environment": {}
+    },
+    "superlu": {
+      "executable": "../build/sb-superlu",
+      "arguments": [],
+      "environment": {
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1"
+      },
+      "runtime_dependencies": {
+        "superlu": "REPLACE_WITH_SUPERLU_LIBRARY_PATH",
+        "blas": "REPLACE_WITH_BLAS_LIBRARY_PATH"
+      }
+    }
+  }
+}

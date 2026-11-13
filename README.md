@@ -6,13 +6,19 @@ sealed shared memory, supervises each worker, validates every returned RHS, and
 writes reproducible result artifacts. Solver adapters implement only a small
 header-only interface; they do not implement processes or messaging.
 
-The initial backend is **Eigen 3.4 SparseLU**, built as `sb-eigen`. It is a portable,
+The baseline backend is **Eigen 3.4 SparseLU**, built as `sb-eigen`. It is a portable,
 sequential baseline with no vendor BLAS dependency or architecture-specific build
 flags. Eigen supports x86 and ARM; Intel/AMD/ARM binaries are built from the same
 source for each target. This repository is MIT licensed, while Eigen retains its
 MPL-2.0 terms. `EIGEN_MPL2_ONLY` excludes incompatible optional Eigen modules.
 See [dependency notices](THIRD_PARTY_NOTICES.md). An ARM CI job is configured;
 local x86 testing alone is not a claim that ARM execution has been verified.
+
+The optional **SuperLU** worker provides another general sparse LU solver for
+comparison, including nonsymmetric and symmetric-indefinite matrices. It runs
+the real CSR input, including the real expansion of complex-encoded systems.
+Both backends are intended for nonsingular systems; numerical failures are
+reported rather than counted as successful solves.
 
 ## Build and run
 
@@ -42,6 +48,50 @@ succeeded or was explicitly unsupported, 1 means a measured execution failed,
 and 2 means a profile/configuration error. Read the outcome counts: unsupported
 instrumentation is not a completed trace. `--max-entries` bounds each materialized
 sparse/dense buffer before allocation (default 5,000,000 elements).
+
+With both workers built, the comparison profile exercises the generated physics
+suite and produces a report containing both solvers. The deployment is a template:
+before running it, copy it and replace its SuperLU and BLAS dependency placeholders
+with the actual library paths on the target host.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    -DSOLVER_BENCHMARK_BUILD_SUPERLU=ON
+cmake --build build -j2
+ctest --test-dir build --output-on-failure
+ldd build/sb-superlu
+cp examples/comparison-deployment.json build/comparison-deployment.json
+# Edit build/comparison-deployment.json as described below.
+solver-benchmark run examples/comparison-profile.json \
+    --deployment build/comparison-deployment.json --output results/comparison-001
+solver-benchmark report results/comparison-001 --output reports/comparison.html
+```
+
+Install the SuperLU 6 development package and its BLAS dependency first, or set
+`CMAKE_PREFIX_PATH` to a SuperLU installation. The worker is optional and is
+not built by default. Use a sequential BLAS or set the thread limit appropriately.
+The installed worker retains non-system library search paths from the build;
+moving those libraries, or their transitive dependencies, may require loader
+configuration or relinking.
+
+The template intentionally fails until its `runtime_dependencies` entries name
+existing files. Use `ldd` in the same runtime environment as the benchmark to
+identify the actual SuperLU and BLAS files; use absolute paths for clarity. Add
+entries for other relevant dynamically linked math libraries and runtimes, such
+as a BLAS implementation loaded transitively or an OpenMP runtime. For statically
+linked components, remove the corresponding placeholder: their code is covered
+by the executable hash. Libraries loaded dynamically after startup may not appear
+in `ldd` and must be recorded separately. Paths are resolved relative to the
+deployment file, so check worker paths when moving the template elsewhere.
+The declared file contents are hashed for comparison provenance; the benchmark
+does not verify that those files are the ones ultimately loaded. Run `ldd` only
+on a trusted executable.
+
+The example deployment points into `build/` and limits common BLAS/OpenMP
+thread pools for SuperLU. Adjust the paths and thread settings for the selected
+build and runtime libraries. The profile's residual tolerances govern acceptance;
+the report also shows achieved componentwise backward errors. A small residual
+alone does not guarantee a small forward error for an ill-conditioned system.
 
 For an offline build, CMake's `FETCHCONTENT_SOURCE_DIR_MDSPAN`,
 `FETCHCONTENT_SOURCE_DIR_JSON`, and `FETCHCONTENT_SOURCE_DIR_EIGEN` can point to
@@ -129,10 +179,9 @@ provide symmetric, structurally symmetric, and positive-definite assertions.
 They expose no diagonal-dominance metadata. Extremely unrepresentable coefficients
 are rejected rather than yielding nonfinite matrices.
 
-The stencil construction keeps spacing separate from grid size, so a future
-Helmholtz generator can reuse it for `-Δ - k² I`. **Wavenumber shifts and indefinite
-Helmholtz generators are not implemented yet.** Such a generator must reconsider
-its definiteness assertion; it cannot inherit the Laplacian's SPD hint blindly.
+Additional generators cover Helmholtz, transport, mixed systems, elasticity,
+meshes, and electric grids. Their matrix properties and parameter sets are
+described in the [generated matrix catalog](docs/generated-matrices.md).
 
 `manufactured_constant_columns` takes `first_value` and `column_increment` and
 constructs each parent-only reference column before forming its RHS. Seeds are

@@ -7,6 +7,7 @@ include(FetchContent)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 option(SOLVER_BENCHMARK_BUILD_EIGEN "Build the Eigen SparseLU worker" ON)
+option(SOLVER_BENCHMARK_BUILD_SUPERLU "Build the SuperLU worker" OFF)
 option(SOLVER_BENCHMARK_BUILD_TESTS "Build worker fixtures and register tests" ON)
 FetchContent_Declare(mdspan URL https://codeload.github.com/kokkos/mdspan/tar.gz/b15adf7aa6626b231a1aa01a4d2f8ba558a24527
   URL_HASH SHA256=451dd02213bf6225c80b14ea69b9b681a5a15d4de266c104407ea154488e939d
@@ -43,6 +44,15 @@ if(SOLVER_BENCHMARK_BUILD_EIGEN)
   install(FILES ${eigen_SOURCE_DIR}/COPYING.MPL2 DESTINATION ${CMAKE_INSTALL_DATADIR}/SolverBenchmark/licenses RENAME Eigen-COPYING.MPL2)
   install(TARGETS sb-eigen RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
+if(SOLVER_BENCHMARK_BUILD_SUPERLU)
+  find_package(superlu CONFIG REQUIRED)
+  add_executable(sb-superlu adapters/superlu/main.cpp)
+  target_link_libraries(sb-superlu PRIVATE SolverBenchmark::worker superlu::superlu)
+  # Preserve non-system dependency locations when installing the worker. This
+  # allows a SuperLU installation discovered via CMAKE_PREFIX_PATH to load.
+  set_target_properties(sb-superlu PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
+  install(TARGETS sb-superlu RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 install(TARGETS solver_benchmark_headers solver_benchmark_worker EXPORT SolverBenchmarkTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
@@ -62,4 +72,14 @@ if(SOLVER_BENCHMARK_BUILD_TESTS)
   target_link_libraries(sb-worker-fixture PRIVATE SolverBenchmark::worker)
   add_test(NAME python-tests COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -v)
   set_tests_properties(python-tests PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/python:$ENV{PYTHONPATH};SB_WORKER_FIXTURE=$<TARGET_FILE:sb-worker-fixture>;SB_EIGEN_WORKER=${CMAKE_CURRENT_BINARY_DIR}/sb-eigen")
+  if(SOLVER_BENCHMARK_BUILD_SUPERLU)
+    set_property(TEST python-tests APPEND PROPERTY ENVIRONMENT "SB_SUPERLU_WORKER=$<TARGET_FILE:sb-superlu>")
+    add_test(NAME superlu-installed-worker
+      COMMAND ${CMAKE_COMMAND}
+        -DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -DINSTALL_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-install-superlu
+        -DINSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}
+        -DBUILD_CONFIG=$<CONFIG>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_superlu_install.cmake)
+  endif()
 endif()
