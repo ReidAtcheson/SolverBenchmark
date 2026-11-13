@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0",
+  "benchmark_profile": "examples/light-profile.json",
+  "max_result_bytes": 10485760,
+  "max_run_seconds": 21600,
+  "targets": [
+    {
+      "id": "intel",
+      "provider": "gcp",
+      "machine_type": "n2-standard-16",
+      "cpu_milli": 16000,
+      "memory_mib": 30000,
+      "min_cpu_platform": "Intel Ice Lake",
+      "image": "projects/debian-cloud/global/images/family/debian-12"
+    },
+    {
+      "id": "amd",
+      "provider": "gcp",
+      "machine_type": "t2d-standard-8",
+      "cpu_milli": 8000,
+      "memory_mib": 28000,
+      "image": "projects/debian-cloud/global/images/family/debian-12"
+    },
+    {
+      "id": "arm",
+      "provider": "gcp",
+      "machine_type": "c4a-standard-8",
+      "cpu_milli": 8000,
+      "memory_mib": 28000,
+      "boot_disk_type": "hyperdisk-balanced",
+      "image": "projects/debian-cloud/global/images/family/debian-12-arm64"
+    }
+  ]
+}

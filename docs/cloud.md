@@ -1,0 +1,162 @@
+# Cloud benchmark profiles
+
+A cloud profile combines a benchmark recipe with a fixed list of hardware targets,
+a job time limit, and an upload limit. `cloud/profiles/light.json` runs
+`examples/light-profile.json` on GCP Batch in `us-central1-c` by default:
+
+| Target | Machine | Physical cores | CPU |
+| --- | --- | --- | --- |
+| intel | n2-standard-16 | 8 (16 vCPU) | Intel, minimum Ice Lake |
+| amd | t2d-standard-8 | 8 | AMD EPYC Milan |
+| arm | c4a-standard-8 | 8 | Google Axion Arm |
+
+N2's minimum is a constraint, not an exact CPU model. Actual host details are
+recorded in `execution.json`. Zone capacity can vary; these jobs do not fall back
+to different machines. Copy the profile to add future targets or recipes. The
+`provider` field identifies the backend; `cloud/run_gcp.py` is the current GCP
+adapter, and other providers can consume the same profile structure with their
+own adapters. Both repository solvers (Eigen SparseLU and SuperLU) are built on
+each target. The machine code is compiled on its native architecture using the
+repository's release build defaults, without `-march=native`.
+
+## Prerequisites
+
+- A billed GCP project, `gcloud` installed and authenticated, and the Batch,
+  Compute Engine, and Cloud Storage APIs enabled. The project needs a usable
+  default VPC with external internet access for package/source downloads, quota
+  and capacity for all three machines and boot disks in the selected zone.
+- The caller must be able to create/delete Batch jobs and buckets, set bucket IAM,
+  and act as the VM service account. For example, use suitable scoped grants for
+  Batch job editor, Storage admin, and Service Account User. The project must
+  permit Batch's service agent to create its Compute resources.
+- An existing VM service account to pass with `--service-account`. That
+  service account needs `roles/batch.agentReporter` on the project before the run.
+  The runner grants it `roles/storage.objectUser` on the temporary bucket only;
+  no permanent project IAM grant is added by the runner. The instance needs access
+  to the metadata server and outbound HTTPS.
+- A local Python 3.11+ environment with this project installed for the report.
+  `gcloud` needs support for the `--soft-delete-duration=0` bucket option.
+
+```sh
+python3 cloud/run_gcp.py \
+  --project YOUR_PROJECT_ID \
+  --service-account YOUR_VM_ACCOUNT@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+  --output results/cloud-light-001 --dry-run
+
+python3 cloud/run_gcp.py \
+  --project YOUR_PROJECT_ID \
+  --service-account YOUR_VM_ACCOUNT@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+  --output results/cloud-light-001
+
+solver-benchmark report results/cloud-light-001/intel results/cloud-light-001/amd \
+  results/cloud-light-001/arm --output reports/cloud-light-001.html
+```
+
+The first command prints the Batch job configurations and compressed source size
+without creating cloud resources. `--region` and `--zone` may be changed together,
+but check that all listed machine types and CPU platforms are available there.
+The output directory must not exist. The runner submits three jobs in parallel,
+collects each result when its job finishes, and returns nonzero on failure or
+missing results. The profile limits each task to six hours. The launcher cancels
+any job that has not reached `RUNNING` within an hour of submission and continues
+waiting for the other jobs. A timeout can stop the worker before it uploads results;
+already collected results remain available locally if the launcher is interrupted.
+
+The source archive contains **tracked working-tree files** (including local edits)
+plus the explicitly named benchmark profile and worker script, even if those
+are not tracked yet. It excludes other untracked files, Git metadata, local build
+outputs, and virtual environments. Commit the source first for reproducibility.
+The job builds the pinned SuperLU 6.0.1 used in CI and downloads the dependencies
+specified by the repository, then runs all configured cases/solvers. Build and
+setup time is billed. Jobs use standard, non-Spot VMs; there are no automatic
+retries and no long-lived container registry or images. The boot disks are deleted
+with the VMs. CPU time and memory limits are per task; the light benchmark itself
+uses the solver thread limits in the benchmark profile.
+
+Only `results.jsonl`, `execution.json`, `profile.json`, and
+`version-manifest.json` are returned for each machine. Matrices and worker traces
+stay on the temporary VM. Each compressed result archive is capped at 10 MiB;
+failed workers additionally attempt to upload at most 64 KiB of log tail, saved
+locally as `failure-<target>.log`. Abrupt VM loss, setup failures, or the hard
+job deadline can prevent even this diagnostic upload. Cloud Logging is not
+configured by this runner. The report groups matrices by their actual input hash;
+if generators produce different bytes across architectures, those matrices
+appear separately instead of being treated as identical.
+
+### Retry a target in another zone
+
+Machine types can be listed in a zone even when capacity is temporarily
+unavailable. If a job remains queued or scheduled, inspect its Batch status
+and events. When the original launcher reports its job prefix, you can cancel
+the affected target while leaving the other jobs running, for example:
+
+```sh
+gcloud batch jobs cancel JOB_PREFIX-arm \
+  --project YOUR_PROJECT_ID --location us-central1
+```
+
+The original launcher will return nonzero for the canceled target but will
+still collect successful results from the other targets and request cleanup.
+To retry only Arm in another zone, make a temporary one-target copy of the
+cloud profile, run it, and combine the results:
+
+```sh
+export SB_ARM_PROFILE="$(mktemp)"
+python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+profile = json.loads(Path('cloud/profiles/light.json').read_text())
+profile['targets'] = [target for target in profile['targets'] if target['id'] == 'arm']
+Path(os.environ['SB_ARM_PROFILE']).write_text(json.dumps(profile))
+PY
+python3 cloud/run_gcp.py --profile "$SB_ARM_PROFILE" \
+  --project YOUR_PROJECT_ID \
+  --service-account YOUR_VM_ACCOUNT@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+  --region us-central1 --zone us-central1-f --output results/cloud-light-arm
+rm -f "$SB_ARM_PROFILE"
+
+solver-benchmark report results/cloud-light-001/intel results/cloud-light-001/amd \
+  results/cloud-light-arm/arm --output reports/cloud-light-001.html
+```
+
+Check availability before choosing the alternate zone. The same technique works
+for another target by changing the target ID and output path.
+
+## Cleanup and billing
+
+The launcher requests deletion of its Batch jobs and recursively deletes its
+unique scratch bucket on success, failure, Ctrl-C and SIGTERM. Soft delete is
+explicitly disabled when the bucket is created; an age-one-day lifecycle rule
+also removes orphaned objects. Batch job deletion is asynchronous. Hard kills,
+network/API failures or an interrupted create request can leave resources behind:
+use the printed job prefix and bucket name to inspect and, if needed, delete them
+manually. The lifecycle rule does not delete the empty bucket. The launcher reports
+cleanup failures and returns nonzero. There is no guarantee of cleanup after the
+launcher itself is killed or loses credentials.
+
+VMs, boot disks, temporary storage, operations and network egress can be billed
+while jobs run. No destination objects or job definitions are intentionally kept
+in GCP after normal cleanup. Result egress is bounded by 30 MiB total plus up to
+192 KiB of failure logs for the three light targets; package/source downloads are
+inbound to GCP. One full local light-profile run produced a 52,273-byte report-only
+archive; cloud results can differ, so the cap, not that observation, is the limit.
+Billing depends on actual machine duration, region, applicable networking, storage
+and pricing. Inspect the project after a failed or interrupted run to avoid
+unintended ongoing VM or disk charges.
+
+### Estimate
+
+As of November 13, 2026, the estimated on-demand VM rates in `us-central1` are
+$0.776944/hour for n2-standard-16, $0.337968/hour for t2d-standard-8, and
+$0.3592/hour for c4a-standard-8, or **$1.474112/hour combined** while all three
+VMs are running. One hour each is about **$1.47**, and two hours each about
+**$2.95**, before boot disks, storage operations, egress and applicable taxes.
+The six-hour task limit is not a precise total VM-billing cap: startup, shutdown
+and other resources can add charges. Cloud duration includes package downloads,
+native builds and the benchmark, and varies by machine and run. Check current
+[Compute Engine pricing](https://cloud.google.com/compute/all-pricing),
+[Cloud Storage pricing](https://cloud.google.com/storage/pricing), and
+[network pricing](https://cloud.google.com/vpc/network-pricing) for your project
+and region before running.

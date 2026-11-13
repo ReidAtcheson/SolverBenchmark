@@ -98,6 +98,13 @@ For an offline build, CMake's `FETCHCONTENT_SOURCE_DIR_MDSPAN`,
 matching pinned source trees. Use the same Python environment for CTest and the
 CLI; select it with `-DPython3_EXECUTABLE=/absolute/path/to/python` if necessary.
 
+## Cloud benchmarks
+
+The checked-in [light cloud profile](cloud/profiles/light.json) runs the light
+benchmark on fixed Intel, AMD, and Arm GCP Batch machines and returns compact
+report inputs. See [cloud benchmark setup and cleanup](docs/cloud.md) for
+prerequisites, usage, transfer limits, and billing considerations.
+
 ## HTML and JSON comparison reports
 
 Collect any number of benchmark output directories into matching reports: a
