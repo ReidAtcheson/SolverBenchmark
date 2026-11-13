@@ -100,10 +100,11 @@ CLI; select it with `-DPython3_EXECUTABLE=/absolute/path/to/python` if necessary
 
 ## Cloud benchmarks
 
-The checked-in [light cloud profile](cloud/profiles/light.json) runs the light
-benchmark on fixed Intel, AMD, and Arm GCP Batch machines and returns compact
-report inputs. See [cloud benchmark setup and cleanup](docs/cloud.md) for
-prerequisites, usage, transfer limits, and billing considerations.
+The checked-in [light](cloud/profiles/light.json) and
+[heavy](cloud/profiles/heavy.json) cloud profiles run benchmarks on fixed Intel,
+AMD, and Arm GCP Batch machines and return compact report inputs. Heavy targets
+200,000-row systems. See [cloud benchmark setup and cleanup](docs/cloud.md)
+for prerequisites, usage, transfer limits, and billing considerations.
 
 ## HTML and JSON comparison reports
 

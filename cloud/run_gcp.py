@@ -33,6 +33,13 @@ def load_profile(path):
         raise ValueError('invalid max_result_bytes')
     if not isinstance(profile.get('max_run_seconds'), int) or not 0 < profile['max_run_seconds'] <= 86400:
         raise ValueError('invalid max_run_seconds')
+    grace = profile.get('upload_grace_seconds', 0)
+    if type(grace) is not int or not (grace == 0 or 30 <= grace < profile['max_run_seconds']):
+        raise ValueError('invalid upload_grace_seconds')
+    if type(profile.get('max_entries', 5_000_000)) is not int or not 0 < profile.get('max_entries', 5_000_000) <= (1 << 63) - 1:
+        raise ValueError('invalid max_entries')
+    if type(profile.get('boot_disk_gb', 30)) is not int or not 10 <= profile.get('boot_disk_gb', 30) <= 65536:
+        raise ValueError('invalid boot_disk_gb')
     benchmark = Path(profile['benchmark_profile'])
     if benchmark.is_absolute() or '..' in benchmark.parts or not (ROOT / benchmark).is_file():
         raise ValueError('benchmark_profile must be a file inside the repository')
@@ -67,10 +74,13 @@ def job_config(target, profile, bucket, service_account, zone, owner=None, singl
     script = (ROOT / 'cloud/gcp-worker.sh').read_text()
     values = {'RUN_BUCKET': bucket, 'RUN_KEY': target['id'],
               'BENCHMARK_PROFILE': profile['benchmark_profile'], 'MAX_RESULT_BYTES': str(profile['max_result_bytes']),
-              'SINGLE_CORE': '1' if single_core else '0'}
+              'SINGLE_CORE': '1' if single_core else '0',
+              'MAX_ENTRIES': str(profile.get('max_entries', 5_000_000)),
+              'MAX_RUN_SECONDS': str(profile['max_run_seconds']),
+              'UPLOAD_GRACE_SECONDS': str(profile.get('upload_grace_seconds', 0))}
     prefix = ''.join('export ' + key + '=' + shlex.quote(value) + '\n' for key, value in values.items())
     policy = {'machineType': target['machine_type'], 'provisioningModel': 'STANDARD',
-              'bootDisk': {'sizeGb': 30}}
+              'bootDisk': {'sizeGb': profile.get('boot_disk_gb', 30)}}
     if target.get('boot_disk_type'):
         policy['bootDisk']['type'] = target['boot_disk_type']
     if target.get('min_cpu_platform'):

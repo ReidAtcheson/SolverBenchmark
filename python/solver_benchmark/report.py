@@ -53,6 +53,18 @@ def _results(path):
                 raise ValueError(f'{path}:{number}: {exc}') from exc
 
 
+def _expected_executions(profile):
+    """Return profile-order execution identifiers, or None for older metadata."""
+    groups = [profile.get(key) for key in ('cases', 'solvers', 'passes')]
+    if any(not isinstance(group, list) for group in groups):
+        return None
+    if any(not isinstance(item, dict) or not isinstance(item.get('id'), str) or not item['id']
+           for group in groups for item in group):
+        return None
+    return [(case['id'], solver['id'], measurement['id'])
+            for case in groups[0] for solver in groups[1] for measurement in groups[2]]
+
+
 def _trial_index(record):
     _object(record, 'trial record')
     trial = _object(record.get('trial', {}), 'trial')
@@ -305,8 +317,12 @@ def collect_report(inputs, metric='wall', *, compare_affinity=False, input_label
             _object(deployment, 'deployment solvers')
             source_number = len(report['sources']) + 1
             label = labels.get(path)
-            report['sources'].append({'id': source_number, 'path': str(path), 'run_id': run_id,
-                                      'label': label})
+            source = {'id': source_number, 'path': str(path), 'run_id': run_id,
+                      'label': label, 'execution_coverage': None}
+            report['sources'].append(source)
+            expected = _expected_executions(profile)
+            observed = set()
+            coverage_known = expected is not None
             count = 0
             for result in _results(path):
                 count += 1
@@ -317,6 +333,12 @@ def collect_report(inputs, metric='wall', *, compare_affinity=False, input_label
                     raise ValueError(f'unknown instrumentation kind: {kind!r}')
                 case_id = _text(result.get('case_id'), 'case_id')
                 solver = _text(result.get('solver_id'), 'solver_id')
+                pass_id = result.get('pass_id')
+                if isinstance(pass_id, str) and pass_id:
+                    observed.add((case_id, solver, pass_id))
+                else:
+                    # Older records without pass IDs cannot establish coverage.
+                    coverage_known = False
                 case = cases[case_id]
                 provenance = _object(result.get('provenance'), 'provenance')
                 input_hash = _text(provenance.get('input_hash'), 'input_hash')
@@ -445,6 +467,14 @@ def collect_report(inputs, metric='wall', *, compare_affinity=False, input_label
                             row['process_resources'][key] = value if old is None else min(old, value)
             if count == 0:
                 raise ValueError('no benchmark results found')
+            if coverage_known:
+                missing = [ids for ids in expected if ids not in observed]
+                source['execution_coverage'] = {
+                    'expected_count': len(expected),
+                    'recorded_count': len(expected) - len(missing),
+                    'missing': [{'case_id': case, 'solver_id': solver, 'pass_id': measurement}
+                                for case, solver, measurement in missing],
+                }
         except (OSError, ValueError, TypeError, KeyError) as exc:
             raise ValueError(f'{path}: {exc}') from exc
     for matrix in matrices.values():

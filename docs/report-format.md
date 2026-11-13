@@ -19,9 +19,16 @@ For example, `--output results/run/summary.html` is rejected if its automatic
 | `title` | The report title, including a custom `--title`. |
 | `metric` | `"wall_seconds"` by default, or `"cpu_seconds"` with `--metric cpu`. All absolute timings use seconds. |
 | `aggregation` | Explicit baseline/measured-trial selection, timing reductions, critical-path phases, normalization, and backward-error rules. |
-| `sources` | Objects with a unique 1-based `id`, the input `results.jsonl` path, its execution `run_id`, and user-supplied `label` (or `null`). Paths are provenance references; the summary can be read without those files. |
+| `sources` | Objects with a unique 1-based `id`, the input `results.jsonl` path, its execution `run_id`, user-supplied `label` (or `null`), and `execution_coverage`. Paths are provenance references; the summary can be read without those files. |
 | `excluded_trace_results` | Number of trace execution records excluded from timing and error aggregation (their RSS snapshots may contribute to matching rows). |
 | `matrices` | One comparison per delivered matrix/RHS input hash. Trace-only inputs produce an empty array. |
+
+Each source's `execution_coverage` compares its profile's case/solver/pass
+combinations with the result records, including trace records and failed or
+unsupported executions. It has `expected_count`, `recorded_count`, and a
+`missing` array of objects with `case_id`, `solver_id`, and `pass_id`. Missing
+records have no known outcome. Coverage is `null` for older metadata that lacks
+the necessary profile lists or result pass identifiers.
 
 Each matrix object contains `case_ids` (sorted case names), `input_hash`, `case`
 (a source matrix/RHS recipe), `best_times`, `platform_best_times`, `platform_best_median_times`, and `rows`. Aliases with the same
