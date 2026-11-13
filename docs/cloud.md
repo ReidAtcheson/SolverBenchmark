@@ -17,7 +17,13 @@ to different machines. Copy the profile to add future targets or recipes. The
 adapter, and other providers can consume the same profile structure with their
 own adapters. Both repository solvers (Eigen SparseLU and SuperLU) are built on
 each target. The machine code is compiled on its native architecture using the
-repository's release build defaults, without `-march=native`.
+repository's release build defaults, without `-march=native`. SuperLU links
+Debian's pthread OpenBLAS build, which chooses kernels for the host CPU and
+honors the profile's OpenBLAS thread limit. The worker verifies the loaded
+library and records its hash. SuperLU's sparse factorization remains serial
+apart from work delegated to BLAS, so small operations may use only one core.
+Eigen SparseLU uses its own serial supernodal update kernel, not external BLAS;
+its numeric phase therefore does not gain BLAS parallelism from this build.
 
 ## Prerequisites
 
@@ -73,6 +79,11 @@ setup time is billed. Jobs use standard, non-Spot VMs; there are no automatic
 retries and no long-lived container registry or images. The boot disks are deleted
 with the VMs. CPU time and memory limits are per task; the light benchmark itself
 uses a thread limit equal to the available physical cores for each solver (falling back to visible logical CPUs if topology is unavailable). The solver and linked libraries may use fewer threads.
+
+For a single-core comparison, add `--single-core` to the launcher and choose a
+new output directory. The worker derives a profile setting every solver's thread
+limit to 1, and pins the benchmark process and its children to one available
+logical CPU. The returned `profile.json` records the derived solver limits.
 
 Only `results.jsonl`, `execution.json`, `profile.json`, and
 `version-manifest.json` are returned for each machine. Matrices and worker traces

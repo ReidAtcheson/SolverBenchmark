@@ -53,7 +53,7 @@ def load_profile(path):
 def make_source(destination, benchmark):
     # Tracked working-tree files only: never copy .git, untracked secrets or builds.
     files = call('git', '-C', str(ROOT), 'ls-files', '-z', capture=True).stdout.split('\0')
-    files += [benchmark, 'cloud/gcp-worker.sh']
+    files += [benchmark, 'cloud/gcp-worker.sh', 'cloud/single_core.py']
     with tarfile.open(destination, 'w:gz') as archive:
         for name in sorted(set(filter(None, files))):
             path = ROOT / name
@@ -63,10 +63,11 @@ def make_source(destination, benchmark):
         raise ValueError('source archive exceeds 20 MB')
 
 
-def job_config(target, profile, bucket, service_account, zone, owner=None):
+def job_config(target, profile, bucket, service_account, zone, owner=None, single_core=False):
     script = (ROOT / 'cloud/gcp-worker.sh').read_text()
     values = {'RUN_BUCKET': bucket, 'RUN_KEY': target['id'],
-              'BENCHMARK_PROFILE': profile['benchmark_profile'], 'MAX_RESULT_BYTES': str(profile['max_result_bytes'])}
+              'BENCHMARK_PROFILE': profile['benchmark_profile'], 'MAX_RESULT_BYTES': str(profile['max_result_bytes']),
+              'SINGLE_CORE': '1' if single_core else '0'}
     prefix = ''.join('export ' + key + '=' + shlex.quote(value) + '\n' for key, value in values.items())
     policy = {'machineType': target['machine_type'], 'provisioningModel': 'STANDARD',
               'bootDisk': {'sizeGb': 30}}
@@ -229,7 +230,8 @@ def run(args):
         make_source(tmp / 'source.tar.gz', profile['benchmark_profile'])
         configs = {}
         for target in profile['targets']:
-            configs[target['id']] = job_config(target, profile, bucket, args.service_account, args.zone, owner)
+            configs[target['id']] = job_config(target, profile, bucket, args.service_account, args.zone, owner,
+                                                single_core=getattr(args, 'single_core', False))
         if args.dry_run:
             print(json.dumps({'bucket': bucket, 'source_bytes': (tmp / 'source.tar.gz').stat().st_size, 'jobs': configs}, indent=2))
             return 0
@@ -389,6 +391,8 @@ def main():
     parser.add_argument('--region', default='us-central1')
     parser.add_argument('--zone', default='us-central1-c')
     parser.add_argument('--output', required=True)
+    parser.add_argument('--single-core', action='store_true',
+                        help='pin the benchmark to one CPU and set every solver thread limit to 1')
     parser.add_argument('--dry-run', action='store_true', help='show jobs and source size without creating cloud resources')
     args = parser.parse_args()
     try:
