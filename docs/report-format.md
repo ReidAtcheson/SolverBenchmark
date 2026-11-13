@@ -19,7 +19,7 @@ For example, `--output results/run/summary.html` is rejected if its automatic
 | `title` | The report title, including a custom `--title`. |
 | `metric` | `"wall_seconds"` by default, or `"cpu_seconds"` with `--metric cpu`. All absolute timings use seconds. |
 | `aggregation` | Explicit baseline/measured-trial selection, timing reductions, critical-path phases, normalization, and backward-error rules. |
-| `sources` | Objects with a unique 1-based `id`, the input `results.jsonl` path, and its execution `run_id`. Paths are provenance references; the summary can be read without those files. |
+| `sources` | Objects with a unique 1-based `id`, the input `results.jsonl` path, its execution `run_id`, and user-supplied `label` (or `null`). Paths are provenance references; the summary can be read without those files. |
 | `excluded_trace_results` | Number of trace execution records excluded from timing and error aggregation (their RSS snapshots may contribute to matching rows). |
 | `matrices` | One comparison per delivered matrix/RHS input hash. Trace-only inputs produce an empty array. |
 
@@ -35,6 +35,7 @@ matching source. Distinct tolerance settings remain distinct solver rows.
 | `platform`, `platform_id`, `host` | Human-readable platform label, hashed platform identity, and full recorded host/affinity metadata. |
 | `comparison_platform`, `comparison_platform_id` | Comparison label and hash of recorded host metadata excluding VM hostname and cloud zone. Affinity grouping follows the policy described below. Distinct hosts remain separate rows. |
 | `solver`, `configuration_id`, `configuration` | Solver ID, hashed configuration identity, and options, worker identity/build/dependency hashes, arguments, and recorded environments. |
+| `label` | User-supplied input label, or `null` for unlabeled inputs. Matching results with different labels are separate rows; matching results with the same label may pool. |
 | `sources` | Source IDs contributing to this row; join with the top-level `sources[].id`. |
 | `outcomes` | Execution outcome names mapped to counts, including failures and unsupported configurations. |
 | `trace_outcomes` | Trace execution outcome names mapped to counts, separate from baseline outcomes. An empty object indicates no matching trace result. |
@@ -58,6 +59,20 @@ parent validation. The median critical path is the median of those same-trial su
 not the sum of phase medians. Median values pool individual eligible trials across
 sources; for an even count, the middle two values are averaged. Warmups and trace
 passes contribute neither timings nor errors.
+
+Use `--label INPUT LABEL` for each labeled input when generating a report; `INPUT`
+must also be listed among the positional inputs. Normally a directory and its
+`results.jsonl` resolve to the same input. Labels do not establish Git provenance
+or select a reference for relative timings. Unlabeled inputs retain the existing
+grouping behavior and do not pool with labeled inputs. In the Python API,
+`collect_report` and `write_report` accept an `input_labels` mapping from input
+paths to labels.
+
+When `results.jsonl` is a symlink, a directory input reads companion metadata
+from that directory, while a file input follows the symlink and reads metadata
+from the target's directory. A directory label selects its corresponding
+directory input; a file label that matches two supplied sources is rejected as
+ambiguous.
 
 For each matrix, `best_times` holds each column's minimum across all solver/platform
 rows, excluding missing values, retained for compatibility. `platform_best_times` maps each comparison platform ID to its own per-column minima. `relative_times` divides by the matching platform baseline: 1 is

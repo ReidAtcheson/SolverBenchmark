@@ -133,6 +133,26 @@ workers and the original input arrays are not needed. `--title` customizes the
 heading, and `--metric cpu` selects CPU seconds instead of the default wall
 seconds. Repeating the same input path does not count it twice.
 
+To keep runs separate for an A/B comparison, assign labels to their input
+directories (or `results.jsonl` paths):
+
+```sh
+solver-benchmark report results/merge-base results/main \
+    --label results/merge-base base --label results/main main \
+    --output reports/ab.html
+```
+
+Labels are supplied by the user; they do not identify or verify a Git revision.
+They appear in the HTML and JSON and keep otherwise matching results in separate
+rows. Inputs assigned the same label may pool as before; unlabeled inputs pool
+with other unlabeled inputs, preserving the default behavior. A label must be
+nonempty and refer to a supplied input. Normally, a directory and its
+`results.jsonl` are the same input and cannot receive conflicting labels.
+If `results.jsonl` is a symlink, a directory input uses metadata beside the
+directory; a file input follows the symlink and uses metadata beside its target.
+A directory label selects its corresponding directory input. A file label that
+could identify two supplied inputs is rejected as ambiguous.
+
 Each matrix comparison has a timing table for each recorded platform, with buttons to switch between
 **absolute timings** (seconds) and **relative timings**, and between minimum and median, with one row per solver configuration and
 columns for setup, pre-analysis, analysis, numeric, solve, teardown, and critical
@@ -143,6 +163,9 @@ that column on the same platform for the chosen statistic:
 the fastest is **1**, and **1.2** means 20% slower. Tied best values are highlighted.
 Missing values appear as a dash and do not enter the baseline; when the best
 timing is zero, zero ties are 1 and positive timings have an infinite ratio.
+Labels do not designate a reference baseline: to compare B against A, use the
+absolute timings or calculate B / A from the JSON. The report does not perform a
+statistical significance test or automatically classify regressions.
 
 Each solver row also shows its **worst componentwise backward error**: the maximum
 over all RHS columns and measured baseline repetitions across its source outputs,
@@ -172,7 +195,8 @@ Comparisons are separated by delivered input hash (including RHS and encoding),
 so identically named cases with different inputs are not mixed. Tolerance settings
 remain part of each solver configuration, allowing their achieved errors and
 timings to be compared within the same matrix table. Matching platform and solver
-configurations pool their repetitions; different CPU/OS/host/affinity metadata,
+configurations with the same label pool their repetitions; different labels,
+CPU/OS/host/affinity metadata,
 solver IDs/options/arguments, worker builds or declared runtime dependency hashes,
 and recorded runtime environments keep separate rows.
 Expandable details and source references retain the context for each comparison.

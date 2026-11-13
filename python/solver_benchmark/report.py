@@ -184,19 +184,58 @@ def _worst_componentwise_backward_error(result):
     return worst
 
 
+def _source_spelling(value):
+    """Resolve the parent directory without following a results-file symlink."""
+    path = Path(value)
+    if path.is_dir():
+        return path.resolve() / 'results.jsonl'
+    if path.name != 'results.jsonl':
+        # Preserve support for a differently named symlink whose target is a
+        # results.jsonl file.
+        target = path.resolve()
+        if target.name != 'results.jsonl':
+            raise ValueError(f'{value}: expected a benchmark directory or results.jsonl')
+        return target
+    return path.parent.resolve() / path.name
+
+
 def _source_paths(inputs):
     paths = []
     for value in inputs:
-        path = Path(value).resolve()
-        if path.is_dir():
-            path = path / 'results.jsonl'
-        if path.name != 'results.jsonl':
-            raise ValueError(f'{value}: expected a benchmark directory or results.jsonl')
+        path = _source_spelling(value)
+        if not Path(value).is_dir():
+            path = path.resolve()
         if path not in paths:
             paths.append(path)
     if not paths:
         raise ValueError('at least one benchmark output is required')
     return paths
+
+
+def _source_labels(paths, input_labels):
+    """Resolve input aliases and validate labels before reading any artifacts."""
+    labels = {}
+    entries = input_labels.items() if hasattr(input_labels, 'items') else (input_labels or ())
+    for value, label in entries:
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError('input labels must be nonempty strings')
+        spelling = _source_spelling(value)
+        # A symlinked results file can refer to two separately supplied
+        # sources with different companion metadata; never guess between them.
+        if Path(value).is_dir() and spelling in paths:
+            # An explicitly supplied directory has its own companion metadata.
+            matches = [spelling]
+        else:
+            matches = [path for path in paths if path in (spelling, spelling.resolve())]
+        if not matches:
+            raise ValueError(f'{value}: labeled input is not among the report inputs')
+        if len(matches) > 1:
+            raise ValueError(f'{value}: label input is ambiguous between multiple report inputs')
+        path = matches[0]
+        if path in labels and labels[path] != label:
+            raise ValueError(f'{value}: conflicting labels for the same report input')
+        labels[path] = label
+    return labels
 
 
 def _single_core_original_affinity(execution, host, process, options):
@@ -214,7 +253,7 @@ def _single_core_original_affinity(execution, host, process, options):
     return original
 
 
-def collect_report(inputs, metric='wall', *, compare_affinity=False):
+def collect_report(inputs, metric='wall', *, compare_affinity=False, input_labels=None):
     """Pool comparable runs without mixing inputs, solver settings, or platforms.
 
     Matrix identity is the delivered matrix/RHS input hash. Rows retain all solver
@@ -223,6 +262,8 @@ def collect_report(inputs, metric='wall', *, compare_affinity=False):
     """
     if metric not in METRICS:
         raise ValueError('metric must be wall or cpu')
+    paths = _source_paths(inputs)
+    labels = _source_labels(paths, input_labels)
     timing = METRICS[metric]
     report = {
         'schema_version': '1.1', 'report_type': 'solver-benchmark-comparison',
@@ -252,7 +293,7 @@ def collect_report(inputs, metric='wall', *, compare_affinity=False):
         },
     }
     matrices = {}
-    for path in _source_paths(inputs):
+    for path in paths:
         try:
             execution, profile, manifest = (
                 _object(load_json(path.parent / name), name) for name in METADATA_FILES)
@@ -263,7 +304,9 @@ def collect_report(inputs, metric='wall', *, compare_affinity=False):
             deployment = _object(execution.get('deployment', {}), 'deployment').get('solvers', {})
             _object(deployment, 'deployment solvers')
             source_number = len(report['sources']) + 1
-            report['sources'].append({'id': source_number, 'path': str(path), 'run_id': run_id})
+            label = labels.get(path)
+            report['sources'].append({'id': source_number, 'path': str(path), 'run_id': run_id,
+                                      'label': label})
             count = 0
             for result in _results(path):
                 count += 1
@@ -311,7 +354,7 @@ def collect_report(inputs, metric='wall', *, compare_affinity=False):
                                  'process_environment': process.get('environment', {}),
                                  'effective_thread_environment': result.get('effective_thread_environment', {})}
                 configuration_id = canonical_hash(configuration)
-                row_key = (platform_id, solver, configuration_id)
+                row_key = (platform_id, solver, configuration_id, label)
                 if row_key not in matrix['rows']:
                     cloud = host.get('cloud')
                     cloud = cloud if isinstance(cloud, dict) else {}
@@ -321,14 +364,14 @@ def collect_report(inputs, metric='wall', *, compare_affinity=False):
                         cpu_platform = None
                     cloud_type = ' '.join(str(v) for v in
                                           (cloud.get('provider'), cloud.get('machine_type')) if v)
-                    label = ' / '.join(str(v) for v in (
+                    platform_label = ' / '.join(str(v) for v in (
                         cpu, cpu_platform, cloud_type, host.get('machine'), process.get('host')) if v)
                     matrix['rows'][row_key] = {
-                        'platform': label, 'platform_id': platform_id, 'host': platform,
+                        'platform': platform_label, 'platform_id': platform_id, 'host': platform,
                         'comparison_platform_id': comparison_platform_id,
                         'comparison_platform': ' / '.join(str(v) for v in
                             (cpu, cpu_platform, cloud_type, host.get('machine')) if v),
-                        'solver': solver, 'configuration': configuration,
+                        'solver': solver, 'configuration': configuration, 'label': label,
                         'configuration_id': configuration_id, 'sources': set(),
                         'outcomes': Counter(), 'trace_outcomes': Counter(), 'samples': 0,
                         '_baseline': False,
@@ -407,7 +450,8 @@ def collect_report(inputs, metric='wall', *, compare_affinity=False):
     for matrix in matrices.values():
         matrix['case_ids'] = sorted(matrix['case_ids'])
         matrix['rows'] = sorted((row for row in matrix['rows'].values() if row.pop('_baseline')), key=lambda row: (
-            row['platform'], row['platform_id'], row['solver'], row['configuration_id']))
+            row['platform'], row['platform_id'], row['solver'], row['configuration_id'],
+            (row['label'] is not None, row['label'] or '')))
         for row in matrix['rows']:
             samples = row.pop('_timing_samples')
             row['times'] = {phase: min(values, default=None) for phase, values in samples.items()}
@@ -472,8 +516,12 @@ def _json_safe(value):
     return value
 
 
-def write_report(inputs, output, metric='wall', title='Solver benchmark report', *, compare_affinity=False):
+def write_report(inputs, output, metric='wall', title='Solver benchmark report', *, compare_affinity=False,
+                 input_labels=None):
     """Write HTML and sibling JSON from one summary; return both output paths."""
+    # Preserve the original spellings so collect_report resolves them exactly
+    # once, while also supporting one-shot iterables of input paths.
+    inputs = list(inputs)
     paths = _source_paths(inputs)
     output = Path(output)
     json_output = output.with_suffix('.json')
@@ -495,7 +543,7 @@ def write_report(inputs, output, metric='wall', title='Solver benchmark report',
         if not isinstance(previous, dict) or previous.get('report_type') != 'solver-benchmark-comparison' \
                 or previous.get('schema_version') not in ('1.0', '1.1'):
             raise ValueError(f'JSON destination is not an existing comparison report: {json_output}')
-    report = collect_report(paths, metric, compare_affinity=compare_affinity)
+    report = collect_report(inputs, metric, compare_affinity=compare_affinity, input_labels=input_labels)
     report['title'] = title
     contents = (render_report(report, title=title),
                 json.dumps(_json_safe(report), indent=2, ensure_ascii=False, allow_nan=False) + '\n')

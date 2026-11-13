@@ -541,6 +541,171 @@ class Reports(unittest.TestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual(len({row['configuration_id'] for row in rows}), 3)
 
+    def test_input_labels_separate_and_pool_comparable_runs(self):
+        first = self.output('label-base-one', [add_trial(result(), [2] * 6)])
+        second = self.output('label-base-two', [add_trial(result(), [4] * 6)])
+        third = self.output('label-candidate', [add_trial(result(), [3] * 6)],
+                            orchestrator='different')
+        unlabeled = self.output('label-unassigned', [add_trial(result(), [8] * 6)])
+        inputs = [first, second, third, unlabeled]
+
+        # Without labels even a different orchestrator manifest pools into one row.
+        pooled = collect_report(inputs)['matrices'][0]['rows']
+        self.assertEqual(len(pooled), 1)
+        self.assertEqual(pooled[0]['samples'], 4)
+
+        report = collect_report(inputs, input_labels={first: 'base', second: 'base',
+                                                      third / 'results.jsonl': 'candidate'})
+        self.assertEqual([source['label'] for source in report['sources']],
+                         ['base', 'base', 'candidate', None])
+        rows = {row['label']: row for row in report['matrices'][0]['rows']}
+        self.assertEqual(set(rows), {'base', 'candidate', None})
+        self.assertEqual(rows['base']['sources'], [1, 2])
+        self.assertEqual(rows['base']['samples'], 2)
+        self.assertEqual(rows['base']['median_times']['numeric'], 3)
+        self.assertEqual(rows['candidate']['sources'], [3])
+        self.assertEqual(rows[None]['sources'], [4])
+        self.assertEqual(rows['candidate']['relative_times']['numeric'], 1.5)
+
+    def test_cli_labels_are_rendered_escaped_and_exported(self):
+        first = self.output('cli-label-base', [add_trial(result(), [1] * 6)])
+        second = self.output('cli-label-main', [add_trial(result(), [2] * 6)])
+        output = self.base / 'labeled.html'
+        label = '<base & "quoted">'
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(['report', str(first), str(second), '--output', str(output),
+                         '--label', str(first / 'results.jsonl'), label,
+                         '--label', str(second), 'main'])
+        self.assertEqual(code, 0)
+        exported = self.read_report_json(output.with_suffix('.json'))
+        self.assertEqual([source['label'] for source in exported['sources']], [label, 'main'])
+        self.assertEqual({row['label'] for row in exported['matrices'][0]['rows']}, {label, 'main'})
+        html = output.read_text(encoding='utf-8')
+        self.assertIn('&lt;base &amp; &quot;quoted&quot;&gt;', html)
+        self.assertNotIn(label, html)
+        tables = Tables(html).tables
+        self.assertTrue(any(label in cell for table in tables for row in table['rows'] for cell in row))
+
+    def test_input_label_aliases_for_symlinked_results_preserve_metadata(self):
+        source = self.output('link-target', [add_trial(result(), [1] * 6)])
+        alias = self.output('link-directory', [add_trial(result(), [1] * 6)])
+        link = alias / 'results.jsonl'
+        link.unlink()
+        link.symlink_to(source / 'results.jsonl')
+
+        # A directory input retains its own companion metadata; spelling its
+        # label using the result-file path must not redirect that metadata.
+        report = collect_report([alias], input_labels={link: 'A'})
+        self.assertEqual(report['sources'][0]['path'], str(link))
+        self.assertEqual(report['sources'][0]['run_id'], 'link-directory')
+        self.assertEqual(report['matrices'][0]['rows'][0]['label'], 'A')
+
+        # An explicit file input retains the existing resolved target behavior.
+        report = collect_report([link], input_labels={alias: 'B'})
+        self.assertEqual(report['sources'][0]['path'], str(source / 'results.jsonl'))
+        self.assertEqual(report['sources'][0]['run_id'], 'link-target')
+        self.assertEqual(report['matrices'][0]['rows'][0]['label'], 'B')
+
+        with self.assertRaisesRegex(ValueError, 'conflicting labels'):
+            collect_report([alias], input_labels={alias: 'A', link: 'B'})
+
+        # Both CLI spellings select the same metadata as collect_report.
+        for index, (input_path, label_path) in enumerate((
+                (alias, alias), (alias, link), (link, alias), (link, link))):
+            with self.subTest(input_path=input_path, label_path=label_path):
+                output = self.base / f'symlink-label-{index}.html'
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = main(['report', str(input_path), '--label', str(label_path), 'A',
+                                 '--output', str(output)])
+                self.assertEqual(code, 0)
+                exported = self.read_report_json(output.with_suffix('.json'))
+                self.assertEqual(exported['sources'][0]['run_id'],
+                                 'link-directory' if input_path == alias else 'link-target')
+                self.assertEqual(exported['sources'][0]['label'], 'A')
+                self.assertEqual(exported['matrices'][0]['rows'][0]['label'], 'A')
+
+        # One-shot input iterables preserve the same directory metadata, and
+        # output collisions must not overwrite that metadata or the target.
+        output = self.base / 'symlink-generator.html'
+        write_report((p for p in [alias]), output, input_labels={link: 'A'})
+        self.assertEqual(self.read_report_json(output.with_suffix('.json'))['sources'][0]['run_id'],
+                         'link-directory')
+        with self.assertRaisesRegex(ValueError, 'must not overwrite'):
+            write_report([alias], alias / 'execution.html', input_labels={link: 'A'})
+
+        # Both sources are meaningful because their companion metadata differs.
+        # A label referring to the symlink can match either, so reject it.
+        with self.assertRaisesRegex(ValueError, 'ambiguous'):
+            collect_report([alias, source], input_labels={link: 'A'})
+        report = collect_report([alias, source], input_labels={alias: 'A', source: 'B'})
+        self.assertEqual([(item['run_id'], item['label']) for item in report['sources']],
+                         [('link-directory', 'A'), ('link-target', 'B')])
+
+        # A differently named symlink to results.jsonl was accepted before
+        # label support and continues to select the target's metadata.
+        old_alias = self.base / 'different-link-name'
+        old_alias.symlink_to(source / 'results.jsonl')
+        report = collect_report([old_alias], input_labels={old_alias: 'C'})
+        self.assertEqual(report['sources'][0]['run_id'], 'link-target')
+        self.assertEqual(report['sources'][0]['label'], 'C')
+
+        # Following a results.jsonl symlink remains valid if the target's
+        # filename differs; metadata comes from the selected input's parent.
+        target = self.output('different-target-name', [add_trial(result(), [1] * 6)])
+        renamed = target / 'other-name.jsonl'
+        (target / 'results.jsonl').rename(renamed)
+        link.unlink()
+        link.symlink_to(renamed)
+        for input_path, label_path, expected in ((alias, link, 'link-directory'),
+                                                  (link, alias, 'different-target-name')):
+            report = collect_report([input_path], input_labels={label_path: 'A'})
+            self.assertEqual(report['sources'][0]['run_id'], expected)
+            self.assertEqual(report['sources'][0]['label'], 'A')
+
+    def test_trace_data_stays_with_its_labeled_run(self):
+        trace = add_trial(result(), [9] * 6)
+        trace['instrumentation'] = {'kind': 'trace', 'collectors': ['linux.phase_resources']}
+        trace['pass_id'] = 'resource'
+        for record in trace['phases'] + trace['teardowns']:
+            record['observations'] = {'rss_after_bytes': 12345}
+        first = self.output('labeled-with-trace', [add_trial(result(), [1] * 6), trace])
+        second = self.output('labeled-no-trace', [add_trial(result(), [2] * 6)])
+        rows = collect_report([first, second], input_labels={first: 'A', second: 'B'})['matrices'][0]['rows']
+        rows = {row['label']: row for row in rows}
+        self.assertEqual(rows['A']['phase_rss_after_bytes']['numeric'], 12345)
+        self.assertEqual(rows['A']['trace_outcomes'], {'success': 1})
+        self.assertIsNone(rows['B']['phase_rss_after_bytes']['numeric'])
+        self.assertEqual(rows['B']['trace_outcomes'], {})
+
+    def test_invalid_input_labels_fail_before_writing_report(self):
+        first = self.output('validation-source', [add_trial(result(), [1] * 6)])
+        other = self.output('validation-other', [add_trial(result(), [2] * 6)])
+        for index, assignments in enumerate((
+            {first: ''},
+            {first: '   '},
+            {other: 'unknown'},
+            {first: 'base', first / 'results.jsonl': 'main'},
+        )):
+            with self.subTest(assignments=assignments):
+                output = self.base / f'invalid-label-{index}.html'
+                with self.assertRaises(ValueError):
+                    write_report([first], output, input_labels=assignments)
+                self.assertFalse(output.exists())
+                self.assertFalse(output.with_suffix('.json').exists())
+
+        # Both spellings of the same input may be assigned the same label.
+        report = collect_report([first, first / 'results.jsonl'],
+                                input_labels={first: 'base', first / 'results.jsonl': 'base'})
+        self.assertEqual(len(report['sources']), 1)
+        self.assertEqual(report['matrices'][0]['rows'][0]['samples'], 1)
+
+        output = self.base / 'conflicting-cli.html'
+        with contextlib.redirect_stderr(io.StringIO()):
+            code = main(['report', str(first), '--output', str(output),
+                         '--label', str(first), 'base', '--label', str(first), 'main'])
+        self.assertEqual(code, 2)
+        self.assertFalse(output.exists())
+
     def test_worker_arguments_and_recorded_process_environment_remain_distinct(self):
         first = self.output('first', [add_trial(result(), [1] * 6)])
         second = self.output('second', [add_trial(result(), [2] * 6)],
