@@ -198,6 +198,39 @@ class Reports(unittest.TestCase):
         self.assertEqual(first_a['sources'], [1, 3])
         self.assertEqual(len({row['platform_id'] for row in rows}), 2)
 
+    def test_cloud_hardware_identity_is_visible_and_distinguishes_platforms(self):
+        arm = {**HOST, 'cpu': '', 'machine': 'aarch64',
+               'cloud': {'provider': 'gcp', 'machine_type': 'c4a-standard-8',
+                         'cpu_platform': 'Google Axion', 'zone': 'us-central1-f'}}
+        other = {**arm, 'cloud': {**arm['cloud'], 'machine_type': 'n4a-standard-8'}}
+        first = self.output('first', [add_trial(result(), [1] * 6)], host=arm)
+        second = self.output('second', [add_trial(result(), [2] * 6)], host=other)
+        report = collect_report([first, second])
+        rows = report['matrices'][0]['rows']
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len({row['platform_id'] for row in rows}), 2)
+        for row, machine_type in zip(sorted(rows, key=lambda r: r['host']['cloud']['machine_type']),
+                                     ('c4a-standard-8', 'n4a-standard-8')):
+            self.assertIn('Google Axion', row['platform'])
+            self.assertIn(machine_type, row['platform'])
+            self.assertEqual(row['host']['cloud']['machine_type'], machine_type)
+        html_path = self.base / 'cloud-report.html'
+        write_report([first, second], html_path)
+        html = html_path.read_text()
+        self.assertIn('Google Axion', html)
+        self.assertIn('c4a-standard-8', html)
+        self.assertIn('n4a-standard-8', html)
+
+    def test_cloud_label_keeps_cpu_name_and_selected_platform(self):
+        host = {**HOST, 'cpu': 'Intel Xeon',
+                'cloud': {'provider': 'gcp', 'machine_type': 'n2-standard-16',
+                          'cpu_platform': 'Intel Ice Lake', 'zone': 'us-central1-c'}}
+        directory = self.output('run', [add_trial(result(), [1] * 6)], host=host)
+        label = collect_report([directory])['matrices'][0]['rows'][0]['platform']
+        self.assertIn('Intel Xeon', label)
+        self.assertIn('Intel Ice Lake', label)
+        self.assertIn('n2-standard-16', label)
+
     def test_inputs_separate_matrices_and_tolerances_separate_solver_rows(self):
         first = self.output('first', [add_trial(result(), [1] * 6)])
         second = self.output('second', [add_trial(result(input_id='c'), [2] * 6)])

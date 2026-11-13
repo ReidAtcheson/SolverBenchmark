@@ -35,7 +35,8 @@ repository's release build defaults, without `-march=native`.
   no permanent project IAM grant is added by the runner. The instance needs access
   to the metadata server and outbound HTTPS.
 - A local Python 3.11+ environment with this project installed for the report.
-  `gcloud` needs support for the `--soft-delete-duration=0` bucket option.
+  The runner uses the Cloud Storage JSON API with the active `gcloud` credentials
+  to create its labeled bucket and lifecycle policy atomically.
 
 ```sh
 python3 cloud/run_gcp.py \
@@ -79,7 +80,12 @@ stay on the temporary VM. Each compressed result archive is capped at 10 MiB;
 failed workers additionally attempt to upload at most 64 KiB of log tail, saved
 locally as `failure-<target>.log`. Abrupt VM loss, setup failures, or the hard
 job deadline can prevent even this diagnostic upload. Cloud Logging is not
-configured by this runner. The report groups matrices by their actual input hash;
+configured by this runner. Each successful execution records the VM's actual
+machine type, CPU platform, and zone from the Compute Engine metadata server in
+`execution.json`. The report includes the machine type and CPU platform in its
+platform label. If hardware metadata cannot be read, the job reports a failure
+but still attempts to return the benchmark results and a diagnostic log. The
+report groups matrices by their actual input hash;
 if generators produce different bytes across architectures, those matrices
 appear separately instead of being treated as identical.
 
@@ -126,21 +132,28 @@ for another target by changing the target ID and output path.
 
 ## Cleanup and billing
 
-The launcher requests deletion of its Batch jobs and recursively deletes its
-unique scratch bucket on success, failure, Ctrl-C and SIGTERM. Soft delete is
-explicitly disabled when the bucket is created; an age-one-day lifecycle rule
-also removes orphaned objects. Batch job deletion is asynchronous. Hard kills,
-network/API failures or an interrupted create request can leave resources behind:
-use the printed job prefix and bucket name to inspect and, if needed, delete them
-manually. The lifecycle rule does not delete the empty bucket. The launcher reports
-cleanup failures and returns nonzero. There is no guarantee of cleanup after the
-launcher itself is killed or loses credentials.
+The launcher requests deletion of its Batch jobs and normally recursively deletes
+its unique scratch bucket on success, failure, Ctrl-C and SIGTERM. If a result
+or log cannot be collected or its existence cannot be determined, the launcher
+retains the bucket for recovery and prints commands to inspect, download, and
+delete its contents. `cloud-run.json` records the bucket name and whether it was
+retained. Soft delete is disabled and an age-one-day lifecycle rule removes
+orphaned objects; this rule does not delete the empty bucket.
+
+Jobs and buckets receive an ownership label at creation, so the launcher can
+reconcile an interrupted create without deleting a resource owned by someone
+else. Batch job deletion is asynchronous. Hard kills, network/API failures or
+unverifiable create requests can still leave resources behind: use the printed
+job prefix and bucket name to inspect and, if needed, delete them manually. The
+launcher reports cleanup failures and returns nonzero. There is no guarantee of
+cleanup after the launcher itself is killed or loses credentials.
 
 VMs, boot disks, temporary storage, operations and network egress can be billed
 while jobs run. No destination objects or job definitions are intentionally kept
-in GCP after normal cleanup. Result egress is bounded by 30 MiB total plus up to
-192 KiB of failure logs for the three light targets; package/source downloads are
-inbound to GCP. One full local light-profile run produced a 52,273-byte report-only
+in GCP after normal cleanup; retained recovery buckets are an exception until
+manually removed. The three result archives are capped at 30 MiB total, plus up
+to 192 KiB of failure logs; retries can transfer additional bytes. Package/source
+downloads are inbound to GCP. One full local light-profile run produced a 52,273-byte report-only
 archive; cloud results can differ, so the cap, not that observation, is the limit.
 Billing depends on actual machine duration, region, applicable networking, storage
 and pricing. Inspect the project after a failed or interrupted run to avoid
@@ -165,8 +178,8 @@ AMD VMs that failed during setup, adding approximately **$0.02** in VM charges.
 The whole session is therefore estimated at **$0.11 for VMs**, plus the other
 charges above. This is an estimate, not an invoice: actual billed time, rates,
 discounts, and additional charges can differ. Recompressing the downloaded report
-inputs produced approximately 139 KiB total; a future run is capped at 30 MiB
-plus failure logs.
+inputs produced approximately 139 KiB total; the archives from a future run are
+capped at 30 MiB plus failure logs, excluding transfer retries.
 
 The three on-demand VMs together cost about **$1.47/hour** while all are running.
 The six-hour task limit is not a precise total VM-billing cap: startup, shutdown

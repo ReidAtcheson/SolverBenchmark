@@ -61,6 +61,13 @@ set +e
 /tmp/sb-venv/bin/solver-benchmark run "$BENCHMARK_PROFILE" --deployment cloud-deployment.json --output /tmp/sb-result
 status=$?
 set -e
+# Record the actual VM identity in the portable execution metadata. Even if
+# metadata lookup fails, transfer any completed results and report the error.
+if [[ -f /tmp/sb-result/execution.json ]]; then
+  if ! /tmp/sb-venv/bin/python -m solver_benchmark.gcp_metadata /tmp/sb-result/execution.json; then
+    status=1
+  fi
+fi
 # Only the four files used by the report are transferred; input matrices and worker traces stay on the VM.
 if [[ -f /tmp/sb-result/results.jsonl && -f /tmp/sb-result/execution.json && -f /tmp/sb-result/profile.json && -f /tmp/sb-result/version-manifest.json ]]; then
   tar -czf /tmp/sb-result.tar.gz -C /tmp/sb-result results.jsonl execution.json profile.json version-manifest.json
