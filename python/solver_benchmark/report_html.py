@@ -96,6 +96,8 @@ def _row_identity(row):
         for index in row['sources'])
     outcomes = ', '.join(f'{name}: {count}' for name, count in sorted(row['outcomes'].items()))
     trace_outcomes = ', '.join(f'{name}: {count}' for name, count in sorted(row['trace_outcomes'].items())) or 'none'
+    label = (f'<small>Label: {_text(row["label"])}</small>'
+             if row.get('label') is not None else '')
     return (
         '<td class="platform">'
         f'{_text(row["platform"])}'
@@ -103,6 +105,7 @@ def _row_identity(row):
         f'{_json_details("Platform details", row["host"])}'
         '</td><th scope="row" class="identity">'
         f'<strong>{_text(row["solver"])}</strong>'
+        f'{label}'
         f'<small>Thread limit: {_text(row["configuration"].get("options", {}).get("thread_limit", "unknown"))}</small>'
         f'<small>Worker CPU affinity: {_text(row["host"].get("worker_affinity"))}</small>'
         f'<small>Configuration {_text(_short_id(row["configuration_id"]))}</small>'
@@ -283,8 +286,10 @@ def render_report(report, title='Solver benchmark report'):
                   '<h2 id="sources-title">Benchmark sources</h2>',
                   '<p class="muted">Source numbers in each row refer to these collected outputs.</p><ol>'))
     for index, source in enumerate(sources, 1):
+        label = (f'<small>Label: {_text(source["label"])}</small><br>'
+                 if source.get('label') is not None else '')
         parts.append(f'<li id="source-{index}"><code>{_text(source["path"])}</code><br>'
-                     f'<small>Run ID: {_text(source["run_id"])}</small></li>')
+                     f'{label}<small>Run ID: {_text(source["run_id"])}</small></li>')
     parts.extend(('</ol></section>', '</main><script>\n'
                   'const relativeButton = document.getElementById("toggle-relative");'
                   'const medianButton = document.getElementById("toggle-median");'
