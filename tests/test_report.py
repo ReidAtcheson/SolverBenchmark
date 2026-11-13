@@ -114,6 +114,89 @@ class Tables(HTMLParser):
 
 
 class Reports(unittest.TestCase):
+    def test_explicit_affinity_comparison_keeps_rows_and_hardware_distinct(self):
+        single = add_trial(result(), [2] * 6)
+        single['process']['affinity'] = [0]
+        single['options']['thread_limit'] = 1
+        full = add_trial(result(), [1] * 6)
+        full['options']['thread_limit'] = 2
+        first = self.output('pinned', [single], host={**HOST, 'affinity': [0]})
+        second = self.output('available', [full])
+        different = self.output('different-hardware', [add_trial(result(), [0.5] * 6)],
+                                host={**HOST, 'cpu': 'Another CPU'})
+        separate = collect_report([first, second, different])['matrices'][0]['rows']
+        self.assertEqual(len({r['comparison_platform_id'] for r in separate}), 3)
+        report = collect_report([first, second, different], compare_affinity=True)
+        rows = report['matrices'][0]['rows']
+        pinned = next(r for r in rows if r['sources'] == [1])
+        available = next(r for r in rows if r['sources'] == [2])
+        other = next(r for r in rows if r['sources'] == [3])
+        self.assertEqual(pinned['comparison_platform_id'], available['comparison_platform_id'])
+        self.assertNotEqual(other['comparison_platform_id'], available['comparison_platform_id'])
+        self.assertNotEqual(pinned['platform_id'], available['platform_id'])
+        self.assertEqual(pinned['host']['affinity'], [0])
+        self.assertEqual(pinned['host']['worker_affinity'], [0])
+        self.assertEqual(pinned['relative_times']['numeric'], 2)
+        self.assertEqual(available['relative_times']['numeric'], 1)
+        self.assertEqual(report['aggregation']['relative_times']['affinity'], 'compare_across_affinities')
+        output = self.base / 'affinity-comparison.html'
+        self.assertEqual(main(['report', str(first), str(second), '--output', str(output),
+                               '--compare-affinity']), 0)
+        html = output.read_text()
+        self.assertIn('different CPU affinities on otherwise matching platforms', html)
+        self.assertIn('Thread limit: 1', html)
+        self.assertIn('Thread limit: 2', html)
+        self.assertIn('Worker CPU affinity: [0]', html)
+        self.assertEqual(len([t for t in Tables(html).tables if t['caption'].startswith('Timings')]), 1)
+
+    def test_recorded_single_core_affinity_compares_only_when_consistent(self):
+        single = add_trial(result(), [2] * 6)
+        single['process']['affinity'] = [0]
+        first = self.output('recorded-pin', [single], host={**HOST, 'affinity': [0]})
+        second = self.output('recorded-available', [add_trial(result(), [1] * 6)])
+        execution_path = first / 'execution.json'
+        execution = json.loads(execution_path.read_text())
+        valid = {'mode': 'single_core', 'original_affinity': [0, 1], 'selected_cpu': 0}
+        def compare(control):
+            execution['affinity_control'] = control
+            execution_path.write_text(json.dumps(execution))
+            return collect_report([first, second])['matrices'][0]['rows']
+        rows = compare(valid)
+        pinned = next(r for r in rows if r['sources'] == [1])
+        available = next(r for r in rows if r['sources'] == [2])
+        self.assertEqual(pinned['comparison_platform_id'], available['comparison_platform_id'])
+        self.assertEqual(pinned['relative_times']['numeric'], 2)
+        self.assertEqual(pinned['host']['affinity'], [0])
+        self.assertEqual(pinned['host']['affinity_control'], valid)
+        for invalid in (
+            {'mode': 'single_core', 'original_affinity': [1, 0], 'selected_cpu': 0},
+            {'mode': 'single_core', 'original_affinity': [0, 0], 'selected_cpu': 0},
+            {'mode': 'single_core', 'original_affinity': [0, True], 'selected_cpu': 0},
+            {'mode': 'single_core', 'original_affinity': [0, 1], 'selected_cpu': 1},
+            {'mode': 'other', 'original_affinity': [0, 1], 'selected_cpu': 0},
+        ):
+            with self.subTest(invalid=invalid):
+                rows = compare(invalid)
+                self.assertEqual(len({r['comparison_platform_id'] for r in rows}), 2)
+        mismatched_worker = add_trial(result(), [2] * 6)
+        mismatch = self.output('worker-mismatch', [mismatched_worker], host={**HOST, 'affinity': [0]})
+        mismatch_path = mismatch / 'execution.json'
+        mismatch_execution = json.loads(mismatch_path.read_text())
+        mismatch_execution['affinity_control'] = valid
+        mismatch_path.write_text(json.dumps(mismatch_execution))
+        rows = collect_report([mismatch, second])['matrices'][0]['rows']
+        self.assertEqual(len({r['comparison_platform_id'] for r in rows}), 2)
+        mismatched_limit = add_trial(result(), [2] * 6)
+        mismatched_limit['process']['affinity'] = [0]
+        mismatched_limit['options']['thread_limit'] = 2
+        mismatch = self.output('limit-mismatch', [mismatched_limit], host={**HOST, 'affinity': [0]})
+        mismatch_path = mismatch / 'execution.json'
+        mismatch_execution = json.loads(mismatch_path.read_text())
+        mismatch_execution['affinity_control'] = valid
+        mismatch_path.write_text(json.dumps(mismatch_execution))
+        rows = collect_report([mismatch, second])['matrices'][0]['rows']
+        self.assertEqual(len({r['comparison_platform_id'] for r in rows}), 2)
+
     def test_equivalent_vms_share_comparison_baseline_but_keep_provenance(self):
         first = add_trial(result('a'), [1] * 6)
         second = add_trial(result('b'), [2] * 6)
@@ -188,8 +271,12 @@ class Reports(unittest.TestCase):
         row = collect_report([directory])['matrices'][0]['rows'][0]
         self.assertEqual(row['cpu_times']['analysis'], 6)
         self.assertEqual(row['phase_rss_after_bytes']['numeric'], 2097152)
-        self.assertEqual(row['process_resources'], {'cpu_seconds': 9, 'max_rss_bytes': 10485760, 'cpu_utilization': 3})
+        self.assertEqual(row['process_resources'], {'cpu_seconds': 9, 'max_rss_bytes': 10485760,
+                                                    'cpu_utilization': 3, 'system_cpu_seconds': 2,
+                                                    'system_cpu_percent': 100 * (2 / 9)})
         self.assertEqual(row['cpu_utilization']['analysis'], 2)
+        self.assertIsNone(row['system_cpu_seconds']['analysis'])
+        self.assertIsNone(row['system_cpu_percent']['analysis'])
         self.assertEqual(row['cpu_utilization']['critical_path'], 2)
         self.assertEqual(row['times']['analysis'], 3)
         output = self.base / 'resources.html'
@@ -210,6 +297,33 @@ class Reports(unittest.TestCase):
         self.assertEqual(row['cpu_times']['analysis'], 0.1)
         self.assertEqual(row['cpu_utilization']['analysis'], 3)
         self.assertEqual(row['cpu_utilization']['setup'], 2)
+
+    def test_system_cpu_uses_same_trial_as_total_and_older_results_remain_readable(self):
+        baseline = add_trial(result(), [2] * 6, index=0)
+        add_trial(baseline, [1] * 6, index=1)
+        for record in baseline['phases'] + baseline['teardowns']:
+            record['times']['system_cpu_seconds'] = 0.2 if record['trial']['index'] == 0 else 0.4
+        # The fastest analysis trial lacks the optional field. Never borrow a
+        # system value from another trial to pair with its wall time.
+        baseline['phases'][7]['times'].pop('system_cpu_seconds')
+        baseline['process'].update(user_cpu_seconds=2, system_cpu_seconds=1, wall_seconds=4)
+        directory = self.output('system-paired', [baseline])
+        row = collect_report([directory])['matrices'][0]['rows'][0]
+        self.assertEqual(row['cpu_utilization']['analysis'], 2)
+        self.assertIsNone(row['system_cpu_seconds']['analysis'])
+        self.assertEqual(row['system_cpu_seconds']['numeric'], 0.4)
+        self.assertEqual(row['system_cpu_percent']['numeric'], 20)
+        self.assertIsNone(row['system_cpu_seconds']['critical_path'])
+        self.assertEqual(row['process_resources']['system_cpu_seconds'], 1)
+        self.assertAlmostEqual(row['process_resources']['system_cpu_percent'], 100 / 3)
+        output = self.base / 'system-paired.html'
+        write_report([directory], output)
+        table = next(t for t in Tables(output.read_text()).tables if t['caption'] == 'Resource utilization')
+        headers = table['rows'][0]
+        self.assertEqual(table['rows'][1][headers.index('System CPU seconds: Numeric')], '0.4')
+        self.assertEqual(table['rows'][1][headers.index('System CPU % of total: Numeric')], '20%')
+        self.assertEqual(table['rows'][1][headers.index('System CPU seconds: Analysis')], '—')
+        self.assertEqual(table['rows'][1][headers.index('Process system CPU % of total')], '33.3333%')
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

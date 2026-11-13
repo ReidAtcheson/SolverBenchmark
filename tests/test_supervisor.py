@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from solver_benchmark.supervisor import run_worker
+from solver_benchmark.supervisor import ProtocolError, _Sequence, run_worker
 
 
 WORKER = r'''
@@ -101,6 +101,16 @@ class SupervisorTests(unittest.TestCase):
         self.worker['environment']['MODE']=mode
         return run_worker(self.worker,self.request,self.arrays,
                           lambda values: {'accepted':accepted and values==[1.,1.]},self.path/'results')
+
+    def test_optional_system_cpu_timing_validation(self):
+        sequence = _Sequence(self.request, {})
+        sequence.trial = {'kind': 'measured', 'index': 0}
+        times = {'wall_seconds': 1, 'cpu_seconds': 1}
+        sequence.check_times({'times': times})  # Existing workers can omit it.
+        sequence.check_times({'times': {**times, 'system_cpu_seconds': 0.25}})
+        for invalid in (-1, None, True, '1', float('inf'), float('nan')):
+            with self.subTest(invalid=invalid), self.assertRaises(ProtocolError):
+                sequence.check_times({'times': {**times, 'system_cpu_seconds': invalid}})
 
     def test_success_warmups_and_samples(self):
         report=self.run_case()

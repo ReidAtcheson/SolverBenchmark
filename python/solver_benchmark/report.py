@@ -132,7 +132,7 @@ def _median(values):
 
 
 def _utilization_samples(result):
-    """Pair CPU and wall from the same accepted trial, including the core sum."""
+    """Pair CPU, system CPU and wall from the same accepted trial."""
     accepted = {_trial_index(r) for r in result.get('accuracy', [])
                 if _trial_index(r) is not None and r.get('accuracy', {}).get('accepted') is True}
     trials = {}
@@ -147,12 +147,16 @@ def _utilization_samples(result):
                 if _object(record.get('result', {}), 'phase result').get('status') not in statuses:
                     continue
             wall, cpu = _time(record, 'wall_seconds'), _time(record, 'cpu_seconds')
+            system = _time(record, 'system_cpu_seconds')
             if wall is not None and cpu is not None:
-                trials.setdefault(index, {})[phase] = (wall, cpu)
+                trials.setdefault(index, {})[phase] = (wall, cpu, system)
     pairs = dict.fromkeys((*PHASES, 'critical_path'))
     for phases in trials.values():
         if all(phase in phases for phase in CORE_PHASES):
-            phases['critical_path'] = tuple(sum(phases[p][i] for p in CORE_PHASES) for i in (0, 1))
+            phases['critical_path'] = tuple(
+                sum(phases[p][i] for p in CORE_PHASES)
+                if all(phases[p][i] is not None for p in CORE_PHASES) else None
+                for i in (0, 1, 2))
         for phase, pair in phases.items():
             if pair[0] > 0 and (pairs[phase] is None or pair[0] < pairs[phase][0]):
                 pairs[phase] = pair
@@ -195,7 +199,22 @@ def _source_paths(inputs):
     return paths
 
 
-def collect_report(inputs, metric='wall'):
+def _single_core_original_affinity(execution, host, process, options):
+    """Return the pre-pin mask only when the recorded pin is internally consistent."""
+    control = execution.get('affinity_control')
+    if not isinstance(control, dict) or control.get('mode') != 'single_core':
+        return None
+    original, selected = control.get('original_affinity'), control.get('selected_cpu')
+    if (not isinstance(original, list) or not original
+            or any(type(cpu) is not int or cpu < 0 for cpu in original)
+            or original != sorted(set(original)) or type(selected) is not int
+            or selected != original[0] or host.get('affinity') != [selected]
+            or process.get('affinity') != [selected] or options.get('thread_limit') != 1):
+        return None
+    return original
+
+
+def collect_report(inputs, metric='wall', *, compare_affinity=False):
     """Pool comparable runs without mixing inputs, solver settings, or platforms.
 
     Matrix identity is the delivered matrix/RHS input hash. Rows retain all solver
@@ -216,12 +235,17 @@ def collect_report(inputs, metric='wall'):
                                           'reduction': 'minimum_of_same_trial_sum'}},
             'relative_times': {
                 'baseline': 'minimum_per_matrix_platform_column',
+                'affinity': ('compare_across_affinities' if compare_affinity
+                             else 'separate_affinities_except_recorded_single_core'),
                 'zero_best': {'zero_value': 1, 'positive_value': {'nonfinite': '+inf'}}},
             'cpu_utilization': {
                 'definition': 'cpu_seconds_divided_by_wall_seconds_from_same_observation',
                 'phase_selection': 'accepted_baseline_trial_with_minimum_positive_wall_seconds',
                 'critical_path': 'same_trial_core_cpu_sum_divided_by_core_wall_sum',
                 'process_selection': 'successful_baseline_process_with_accepted_trials_and_minimum_positive_wall_seconds'},
+            'system_cpu': {
+                'definition': 'system_cpu_seconds_and_percentage_of_total_cpu_seconds',
+                'selection': 'same_observation_as_cpu_utilization'},
             'worst_componentwise_backward_error': {
                 'reduction': 'maximum_over_rhs_trials_and_sources',
                 'includes_rejected_trials': True},
@@ -267,8 +291,18 @@ def collect_report(inputs, metric='wall'):
                 process = _object(result.get('process', {}), 'process')
                 platform = {**host, 'hostname': process.get('host'),
                             'worker_affinity': process.get('affinity')}
+                if 'affinity_control' in execution:
+                    platform['affinity_control'] = execution['affinity_control']
                 platform_id = canonical_hash(platform)
                 comparison_platform = {**host, 'worker_affinity': process.get('affinity')}
+                if compare_affinity:
+                    comparison_platform.pop('affinity', None)
+                    comparison_platform.pop('worker_affinity', None)
+                else:
+                    original_affinity = _single_core_original_affinity(execution, host, process, options)
+                    if original_affinity is not None:
+                        comparison_platform['affinity'] = original_affinity
+                        comparison_platform['worker_affinity'] = original_affinity
                 if isinstance(comparison_platform.get('cloud'), dict):
                     comparison_platform['cloud'] = {k: v for k, v in comparison_platform['cloud'].items() if k != 'zone'}
                 comparison_platform_id = canonical_hash(comparison_platform)
@@ -349,6 +383,9 @@ def collect_report(inputs, metric='wall'):
                         row['cpu_times'][phase] = value
                 if samples and result.get('outcome') == 'success':
                     user, system = process.get('user_cpu_seconds'), process.get('system_cpu_seconds')
+                    for name, value in (('user_cpu_seconds', user), ('system_cpu_seconds', system)):
+                        if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
+                            raise ValueError(f'{name} must be finite and nonnegative')
                     values = {'cpu_seconds': user + system if user is not None and system is not None else None,
                               'max_rss_bytes': process.get('max_rss_bytes')}
                     wall = process.get('wall_seconds')
@@ -356,7 +393,7 @@ def collect_report(inputs, metric='wall'):
                         raise ValueError('process wall_seconds must be finite and nonnegative')
                     old = row['_process_utilization_pair']
                     if wall and values['cpu_seconds'] is not None and (old is None or wall < old[0]):
-                        row['_process_utilization_pair'] = (wall, values['cpu_seconds'])
+                        row['_process_utilization_pair'] = (wall, values['cpu_seconds'], system)
                     for key, value in values.items():
                         if value is not None:
                             if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
@@ -391,9 +428,18 @@ def collect_report(inputs, metric='wall'):
             for platform_id in sorted({r['comparison_platform_id'] for r in matrix['rows']})}
         for row in matrix['rows']:
             row['cpu_utilization'] = {phase: None if pair is None else pair[1] / pair[0]
-                                      for phase, pair in row.pop('_utilization_pairs').items()}
+                                      for phase, pair in row['_utilization_pairs'].items()}
+            row['system_cpu_seconds'] = {
+                phase: None if pair is None else pair[2]
+                for phase, pair in row['_utilization_pairs'].items()}
+            row['system_cpu_percent'] = {
+                phase: None if pair is None or pair[2] is None or pair[1] == 0 else 100 * (pair[2] / pair[1])
+                for phase, pair in row.pop('_utilization_pairs').items()}
             pair = row.pop('_process_utilization_pair')
             row['process_resources']['cpu_utilization'] = None if pair is None else pair[1] / pair[0]
+            row['process_resources']['system_cpu_seconds'] = None if pair is None else pair[2]
+            row['process_resources']['system_cpu_percent'] = (None if pair is None or pair[2] is None or pair[1] == 0
+                                                               else 100 * (pair[2] / pair[1]))
             row['sources'] = sorted(row['sources'])
             row['outcomes'] = dict(sorted(row['outcomes'].items()))
             row['trace_outcomes'] = dict(sorted(row['trace_outcomes'].items()))
@@ -426,7 +472,7 @@ def _json_safe(value):
     return value
 
 
-def write_report(inputs, output, metric='wall', title='Solver benchmark report'):
+def write_report(inputs, output, metric='wall', title='Solver benchmark report', *, compare_affinity=False):
     """Write HTML and sibling JSON from one summary; return both output paths."""
     paths = _source_paths(inputs)
     output = Path(output)
@@ -449,7 +495,7 @@ def write_report(inputs, output, metric='wall', title='Solver benchmark report')
         if not isinstance(previous, dict) or previous.get('report_type') != 'solver-benchmark-comparison' \
                 or previous.get('schema_version') not in ('1.0', '1.1'):
             raise ValueError(f'JSON destination is not an existing comparison report: {json_output}')
-    report = collect_report(paths, metric)
+    report = collect_report(paths, metric, compare_affinity=compare_affinity)
     report['title'] = title
     contents = (render_report(report, title=title),
                 json.dumps(_json_safe(report), indent=2, ensure_ascii=False, allow_nan=False) + '\n')

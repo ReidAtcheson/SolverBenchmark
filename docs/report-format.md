@@ -33,7 +33,7 @@ matching source. Distinct tolerance settings remain distinct solver rows.
 | Field | Meaning |
 | --- | --- |
 | `platform`, `platform_id`, `host` | Human-readable platform label, hashed platform identity, and full recorded host/affinity metadata. |
-| `comparison_platform`, `comparison_platform_id` | Comparison label and hash of recorded host and affinity metadata excluding the VM hostname and cloud zone. Distinct hosts remain separate rows. |
+| `comparison_platform`, `comparison_platform_id` | Comparison label and hash of recorded host metadata excluding VM hostname and cloud zone. Affinity grouping follows the policy described below. Distinct hosts remain separate rows. |
 | `solver`, `configuration_id`, `configuration` | Solver ID, hashed configuration identity, and options, worker identity/build/dependency hashes, arguments, and recorded environments. |
 | `sources` | Source IDs contributing to this row; join with the top-level `sources[].id`. |
 | `outcomes` | Execution outcome names mapped to counts, including failures and unsupported configurations. |
@@ -44,7 +44,8 @@ matching source. Distinct tolerance settings remain distinct solver rows.
 | `cpu_times` | Independent minimum accepted baseline phase CPU seconds and minimum same-trial CPU critical path. |
 | `phase_rss_after_bytes` | Minimum RSS snapshot after each completed phase in accepted measured trace trials; boundary snapshots are not phase peaks. |
 | `cpu_utilization` | CPU seconds divided by wall seconds from the same accepted trial with the shortest positive wall time for each phase; critical path pairs same-trial sums. |
-| `process_resources` | Minimum lifetime CPU seconds and peak RSS bytes, and CPU / wall from the successful baseline process with accepted trials and shortest positive lifetime wall time. Includes startup and warmup. |
+| `system_cpu_seconds`, `system_cpu_percent` | Kernel-mode CPU seconds and its percentage of total CPU seconds for the same selected trial as `cpu_utilization`; critical path requires all three system CPU times. Missing system timings produce null, including for older results; a zero total CPU time has no percentage. |
+| `process_resources` | Minimum lifetime CPU seconds and peak RSS bytes, and CPU / wall, system CPU seconds and its percentage of total from the same successful baseline process with accepted trials and shortest positive lifetime wall time. Includes startup and warmup. |
 | `relative_times` | Dimensionless timing ratios against the row's entry in `platform_best_times`, with the same phase keys. |
 | `relative_median_times` | Median timing ratios against the row's entry in `platform_best_median_times`. |
 | `worst_componentwise_backward_error` | Maximum dimensionless error over all RHS columns and measured baseline trials across the row's sources, including rejected solutions. |
@@ -66,10 +67,28 @@ are never normalized by another solver's error.
 `platform_best_median_times` and `relative_median_times` apply the same rules to
 the median for each row, independently of the minimum-based baselines.
 
+By default, the comparison platform includes the recorded host and worker CPU
+affinities. A single-core cloud run with consistent recorded affinity-control
+metadata is grouped using its original available CPU mask, allowing comparison
+with a run on that same mask. The pinned CPU set is retained in each row.
+Pass `--compare-affinity` when intentionally comparing different
+affinity limits, such as a cloud `--single-core` run against an available-core
+run. This option ignores only those affinity fields when choosing relative
+baselines; hardware and other platform fields still distinguish groups, and the
+original platform identity and recorded affinities remain on each row. The HTML
+and `aggregation.relative_times.affinity` disclose the chosen grouping policy.
+Different CPU sets can affect performance; interpret this comparison accordingly.
+
 ## Numeric representation
 
 Finite values are JSON numbers with their stored precision; HTML displays six
 significant digits. `null` means no eligible timing or no recorded error, not zero.
+Native-worker phase timing includes sampling overhead; allow for uncertainty on
+the order of several microseconds, especially for short phases. This is a rule
+of thumb, not a measured confidence interval or a guaranteed bound; scheduling
+and other effects can cause larger variations.
+System CPU times in short phases can be limited by operating system clock precision;
+independent sampling boundaries and rounding can yield percentages above 100%.
 Nonfinite diagnostics are JSON objects such as `{"nonfinite": "+inf"}`. This keeps
 the file valid for strict JSON parsers and preserves the distinction between
 missing measurements and infinite ratios/errors. A failed-verification diagnostic

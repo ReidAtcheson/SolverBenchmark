@@ -189,7 +189,7 @@ std::span<T> view(mapping_t& mapping, region_t r) {
     return {reinterpret_cast<T*>(base + r.offset), r.bytes / sizeof(T)};
 }
 
-struct clocks_t { std::uint64_t wall; std::uint64_t cpu; };
+struct clocks_t { std::uint64_t wall; std::uint64_t cpu; std::uint64_t system_cpu_us; };
 
 std::uint64_t clock_ns(clockid_t id) {
     timespec t{};
@@ -198,12 +198,21 @@ std::uint64_t clock_ns(clockid_t id) {
         + static_cast<std::uint64_t>(t.tv_nsec);
 }
 
-clocks_t clocks() { return {clock_ns(CLOCK_MONOTONIC), clock_ns(CLOCK_PROCESS_CPUTIME_ID)}; }
+clocks_t clocks() {
+    const auto wall = clock_ns(CLOCK_MONOTONIC);
+    const auto cpu = clock_ns(CLOCK_PROCESS_CPUTIME_ID);
+    rusage usage{};
+    if (::getrusage(RUSAGE_SELF, &usage)) os_error("getrusage");
+    const auto system_cpu_us = static_cast<std::uint64_t>(usage.ru_stime.tv_sec) * 1000000ULL
+        + static_cast<std::uint64_t>(usage.ru_stime.tv_usec);
+    return {wall, cpu, system_cpu_us};
+}
 
 json duration(clocks_t start, clocks_t stop, bool measured) {
     if (!measured) return nullptr;
     return {{"wall_seconds", static_cast<double>(stop.wall - start.wall) / 1e9},
-        {"cpu_seconds", static_cast<double>(stop.cpu - start.cpu) / 1e9}};
+        {"cpu_seconds", static_cast<double>(stop.cpu - start.cpu) / 1e9},
+        {"system_cpu_seconds", static_cast<double>(stop.system_cpu_us - start.system_cpu_us) / 1e6}};
 }
 
 struct resources_t {

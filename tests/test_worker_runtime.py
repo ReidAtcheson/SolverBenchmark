@@ -170,12 +170,15 @@ class WorkerBoundaryTests(unittest.TestCase):
                 event = session.receive()
                 if event["type"] == "phase_end":
                     phases.append(event)
+                    self.assertGreaterEqual(event["times"]["system_cpu_seconds"], 0)
                     self.assertIn("observations", event)
                     self.assertLessEqual(int(event["trace"]["begin_monotonic_ns"]),
                                          int(event["trace"]["end_monotonic_ns"]))
                 if event["type"] == "trial_complete":
                     self.assertEqual(struct.unpack("<4d", session.output[:]), (0.5, 0.5, 1.0, 1.0))
                     session.send({"type": "trial_ack", **session.context, "trial": event["trial"]})
+                if event["type"] == "teardown_end":
+                    self.assertGreaterEqual(event["times"]["system_cpu_seconds"], 0)
                 if event["type"] == "complete":
                     self.assertEqual(event["outcome"], "success")
                     break

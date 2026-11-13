@@ -2,10 +2,13 @@ import importlib.util
 import io
 import argparse
 import itertools
+import os
 import subprocess
 from types import SimpleNamespace
 import json
+import os
 from pathlib import Path
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -19,6 +22,32 @@ spec.loader.exec_module(cloud)
 
 
 class CloudGcpTests(unittest.TestCase):
+    def test_worker_manifest_records_and_verifies_loaded_openblas(self):
+        # Exercise the worker's manifest generation without needing a VM or a
+        # full SuperLU build. A different loaded backend must fail closed.
+        script = (ROOT / 'cloud/gcp-worker.sh').read_text().split("python3 - <<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            superlu, expected, other = (folder / name for name in ('libsuperlu.so', 'libopenblas.so', 'other-openblas.so'))
+            for path in (superlu, expected, other):
+                path.touch()
+            previous = os.getcwd()
+            try:
+                os.chdir(tmp)
+                with mock.patch.dict(os.environ, {'SB_OPENBLAS_LIBRARY': str(expected)}):
+                    for loaded in (expected, other):
+                        ldd = f'libsuperlu.so => {superlu} (0x1)\nlibopenblas.so.0 => {loaded} (0x2)\n'
+                        with mock.patch('subprocess.check_output', return_value=ldd):
+                            if loaded == other:
+                                with self.assertRaisesRegex(RuntimeError, 'did not load'):
+                                    exec(script, {})
+                            else:
+                                exec(script, {})
+                                manifest = json.loads((folder / 'cloud-deployment.json').read_text())
+                                self.assertEqual(manifest['solvers']['superlu']['runtime_dependencies']['blas'], str(expected))
+            finally:
+                os.chdir(previous)
+
     def test_profile_jobs_use_native_architectures_and_bounded_resources(self):
         profile = cloud.load_profile(ROOT / 'cloud/profiles/light.json')
         self.assertEqual({t['id'] for t in profile['targets']}, {'intel', 'amd', 'arm'})
@@ -33,6 +62,61 @@ class CloudGcpTests(unittest.TestCase):
             self.assertEqual(task['maxRunDuration'], str(profile['max_run_seconds']) + 's')
             self.assertEqual(task['maxRetryCount'], 0)
             self.assertIn('MAX_RESULT_BYTES', task['runnables'][0]['script']['text'])
+            self.assertIn('export SINGLE_CORE=0\n', task['runnables'][0]['script']['text'])
+
+    def test_single_core_job_sets_mode(self):
+        profile = cloud.load_profile(ROOT / 'cloud/profiles/light.json')
+        job = cloud.job_config(profile['targets'][0], profile, 'test-bucket',
+                               'a@b.example', 'us-central1-c', single_core=True)
+        script = job['taskGroups'][0]['taskSpec']['runnables'][0]['script']['text']
+        self.assertIn('export SINGLE_CORE=1\n', script)
+
+    @unittest.skipUnless(hasattr(os, 'sched_getaffinity'), 'requires Linux CPU affinity')
+    def test_single_core_profile_and_inherited_affinity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, derived = Path(tmp) / 'source.json', Path(tmp) / 'derived.json'
+            provenance, execution = Path(tmp) / 'affinity.json', Path(tmp) / 'execution.json'
+            profile = {'solvers': [{'id': 'a', 'options': {'thread_limit': 'available_cores'}},
+                                   {'id': 'b', 'options': {'thread_limit': 8}}], 'cases': []}
+            source.write_text(json.dumps(profile))
+            probe = ('import json,os,subprocess,sys; '
+                     'print(json.dumps([sorted(os.sched_getaffinity(0)), '
+                     'json.loads(subprocess.check_output([sys.executable, "-c", '
+                     '"import json,os; print(json.dumps(sorted(os.sched_getaffinity(0))))"]))]))')
+            output = subprocess.check_output([sys.executable, str(ROOT / 'cloud/single_core.py'),
+                                              str(source), str(derived), sys.executable, '-c', probe], text=True,
+                                             env={**os.environ, 'SB_SINGLE_CORE_AFFINITY_PATH': str(provenance)})
+            parent_cpus, child_cpus = json.loads(output)
+            self.assertEqual(len(parent_cpus), 1)
+            self.assertEqual(parent_cpus, child_cpus)
+            self.assertIn(parent_cpus[0], os.sched_getaffinity(0))
+            actual = json.loads(derived.read_text())
+            self.assertEqual([solver['options']['thread_limit'] for solver in actual['solvers']], [1, 1])
+            self.assertEqual(actual['cases'], profile['cases'])
+            self.assertEqual(json.loads(source.read_text()), profile)
+            expected = {'mode': 'single_core', 'original_affinity': sorted(os.sched_getaffinity(0)),
+                        'selected_cpu': parent_cpus[0]}
+            self.assertEqual(json.loads(provenance.read_text()), expected)
+            execution.write_text(json.dumps({'host': {'affinity': parent_cpus}, 'run_id': 'test'}))
+            subprocess.run([sys.executable, str(ROOT / 'cloud/single_core.py'), '--attach',
+                            str(provenance), str(execution)], check=True)
+            attached = json.loads(execution.read_text())
+            self.assertEqual(attached['affinity_control'], expected)
+            self.assertEqual(attached['host']['affinity'], parent_cpus)
+            self.assertEqual(attached['run_id'], 'test')
+
+    def test_single_core_affinity_attachment_rejects_mismatch_without_modification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            provenance, execution = Path(tmp) / 'affinity.json', Path(tmp) / 'execution.json'
+            provenance.write_text(json.dumps({'mode': 'single_core', 'original_affinity': [0, 1],
+                                               'selected_cpu': 0}))
+            original = json.dumps({'host': {'affinity': [1]}, 'run_id': 'test'})
+            execution.write_text(original)
+            result = subprocess.run([sys.executable, str(ROOT / 'cloud/single_core.py'), '--attach',
+                                     str(provenance), str(execution)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('does not match', result.stderr)
+            self.assertEqual(execution.read_text(), original)
 
     def test_extract_only_report_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -66,6 +150,7 @@ class CloudGcpTests(unittest.TestCase):
                 names = set(tar.getnames())
             self.assertIn('examples/light-profile.json', names)
             self.assertIn('cloud/gcp-worker.sh', names)
+            self.assertIn('cloud/single_core.py', names)
             self.assertNotIn('.git/config', names)
             self.assertFalse(any(name.startswith(('build/', '.venv/')) for name in names))
 
