@@ -136,7 +136,8 @@ seconds. Repeating the same input path does not count it twice.
 Each matrix comparison has a timing table for each recorded platform, with buttons to switch between
 **absolute timings** (seconds) and **relative timings**, and between minimum and median, with one row per solver configuration and
 columns for setup, pre-analysis, analysis, numeric, solve, teardown, and critical
-path. Median timings use all eligible pooled trials; for an even number of values,
+path. Equivalent recorded platforms share a table across VM hostnames and cloud zones;
+host provenance remains in each row. Median timings use all eligible pooled trials; for an even number of values,
 the median averages the middle two. Relative timings divide by the best timing in
 that column on the same platform for the chosen statistic:
 the fastest is **1**, and **1.2** means 20% slower. Tied best values are highlighted.

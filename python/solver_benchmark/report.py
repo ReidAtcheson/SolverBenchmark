@@ -206,7 +206,7 @@ def collect_report(inputs, metric='wall'):
         raise ValueError('metric must be wall or cpu')
     timing = METRICS[metric]
     report = {
-        'schema_version': '1.0', 'report_type': 'solver-benchmark-comparison',
+        'schema_version': '1.1', 'report_type': 'solver-benchmark-comparison',
         'metric': timing, 'sources': [], 'matrices': [], 'excluded_trace_results': 0,
         'aggregation': {
             'pass_kind': 'baseline', 'trial_kind': 'measured',
@@ -268,6 +268,10 @@ def collect_report(inputs, metric='wall'):
                 platform = {**host, 'hostname': process.get('host'),
                             'worker_affinity': process.get('affinity')}
                 platform_id = canonical_hash(platform)
+                comparison_platform = {**host, 'worker_affinity': process.get('affinity')}
+                if isinstance(comparison_platform.get('cloud'), dict):
+                    comparison_platform['cloud'] = {k: v for k, v in comparison_platform['cloud'].items() if k != 'zone'}
+                comparison_platform_id = canonical_hash(comparison_platform)
                 configuration = {'options': options, 'worker': workers[solver],
                                  'arguments': deployment.get(solver, {}).get('arguments', []),
                                  'process_environment': process.get('environment', {}),
@@ -287,9 +291,12 @@ def collect_report(inputs, metric='wall'):
                         cpu, cpu_platform, cloud_type, host.get('machine'), process.get('host')) if v)
                     matrix['rows'][row_key] = {
                         'platform': label, 'platform_id': platform_id, 'host': platform,
+                        'comparison_platform_id': comparison_platform_id,
+                        'comparison_platform': ' / '.join(str(v) for v in
+                            (cpu, cpu_platform, cloud_type, host.get('machine')) if v),
                         'solver': solver, 'configuration': configuration,
                         'configuration_id': configuration_id, 'sources': set(),
-                        'outcomes': Counter(), 'samples': 0,
+                        'outcomes': Counter(), 'trace_outcomes': Counter(), 'samples': 0,
                         '_baseline': False,
                         'worst_componentwise_backward_error': None,
                         'times': dict.fromkeys((*PHASES, 'critical_path')),
@@ -302,6 +309,7 @@ def collect_report(inputs, metric='wall'):
                 row = matrix['rows'][row_key]
                 row['sources'].add(source_number)
                 if kind == 'trace':
+                    row['trace_outcomes'][_text(result.get('outcome'), 'outcome')] += 1
                     accepted = {_trial_index(a) for a in result.get('accuracy', [])
                                 if _trial_index(a) is not None and a.get('accuracy', {}).get('accepted') is True}
                     for phase_name, records in ((None, result.get('phases', [])),
@@ -373,14 +381,14 @@ def collect_report(inputs, metric='wall'):
             for phase in (*PHASES, 'critical_path')}
         matrix['platform_best_times'] = {
             platform_id: {phase: min((r['times'][phase] for r in matrix['rows']
-                                      if r['platform_id'] == platform_id and r['times'][phase] is not None), default=None)
+                                      if r['comparison_platform_id'] == platform_id and r['times'][phase] is not None), default=None)
                           for phase in (*PHASES, 'critical_path')}
-            for platform_id in sorted({r['platform_id'] for r in matrix['rows']})}
+            for platform_id in sorted({r['comparison_platform_id'] for r in matrix['rows']})}
         matrix['platform_best_median_times'] = {
             platform_id: {phase: min((r['median_times'][phase] for r in matrix['rows']
-                                      if r['platform_id'] == platform_id and r['median_times'][phase] is not None), default=None)
+                                      if r['comparison_platform_id'] == platform_id and r['median_times'][phase] is not None), default=None)
                           for phase in (*PHASES, 'critical_path')}
-            for platform_id in sorted({r['platform_id'] for r in matrix['rows']})}
+            for platform_id in sorted({r['comparison_platform_id'] for r in matrix['rows']})}
         for row in matrix['rows']:
             row['cpu_utilization'] = {phase: None if pair is None else pair[1] / pair[0]
                                       for phase, pair in row.pop('_utilization_pairs').items()}
@@ -388,16 +396,17 @@ def collect_report(inputs, metric='wall'):
             row['process_resources']['cpu_utilization'] = None if pair is None else pair[1] / pair[0]
             row['sources'] = sorted(row['sources'])
             row['outcomes'] = dict(sorted(row['outcomes'].items()))
+            row['trace_outcomes'] = dict(sorted(row['trace_outcomes'].items()))
             row['relative_times'] = {}
             row['relative_median_times'] = {}
             for phase, value in row['times'].items():
-                best = matrix['platform_best_times'][row['platform_id']][phase]
+                best = matrix['platform_best_times'][row['comparison_platform_id']][phase]
                 row['relative_times'][phase] = (
                     None if value is None else
                     1.0 if value == best else
                     math.inf if best == 0 else value / best)
                 value = row['median_times'][phase]
-                best = matrix['platform_best_median_times'][row['platform_id']][phase]
+                best = matrix['platform_best_median_times'][row['comparison_platform_id']][phase]
                 row['relative_median_times'][phase] = (
                     None if value is None else 1.0 if value == best else
                     math.inf if best == 0 else value / best)
@@ -438,7 +447,7 @@ def write_report(inputs, output, metric='wall', title='Solver benchmark report')
         except (ValueError, OSError) as exc:
             raise ValueError(f'JSON destination is not an existing comparison report: {json_output}') from exc
         if not isinstance(previous, dict) or previous.get('report_type') != 'solver-benchmark-comparison' \
-                or previous.get('schema_version') != '1.0':
+                or previous.get('schema_version') not in ('1.0', '1.1'):
             raise ValueError(f'JSON destination is not an existing comparison report: {json_output}')
     report = collect_report(paths, metric)
     report['title'] = title

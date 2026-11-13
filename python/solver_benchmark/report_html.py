@@ -95,6 +95,7 @@ def _row_identity(row):
         f'<a href="#source-{_text(index)}">{_text(index)}</a>'
         for index in row['sources'])
     outcomes = ', '.join(f'{name}: {count}' for name, count in sorted(row['outcomes'].items()))
+    trace_outcomes = ', '.join(f'{name}: {count}' for name, count in sorted(row['trace_outcomes'].items())) or 'none'
     return (
         '<td class="platform">'
         f'{_text(row["platform"])}'
@@ -104,7 +105,8 @@ def _row_identity(row):
         f'<strong>{_text(row["solver"])}</strong>'
         f'<small>Configuration {_text(_short_id(row["configuration_id"]))}</small>'
         f'<small>Sources: {sources}</small>'
-        f'<small>{_text(outcomes)}</small>'
+        f'<small>Baseline: {_text(outcomes)}</small>'
+        f'<small>Resource/trace: {_text(trace_outcomes)}</small>'
         f'{_json_details("Solver configuration", row["configuration"])}'
         f'</th><td class="timing">{_text(row["samples"])}</td>'
     )
@@ -141,8 +143,8 @@ def _error_cell(value):
 
 
 def _table(matrix, metric_name):
-    rows, best = matrix['rows'], matrix['platform_best_times'][matrix['rows'][0]['platform_id']]
-    median_best = matrix['platform_best_median_times'][matrix['rows'][0]['platform_id']]
+    rows, best = matrix['rows'], matrix['platform_best_times'][matrix['rows'][0]['comparison_platform_id']]
+    median_best = matrix['platform_best_median_times'][matrix['rows'][0]['comparison_platform_id']]
     caption = f'Timings — {metric_name} (seconds or ratio to column best)'
     parts = ['<div class="table-scroll"><table>', f'<caption>{caption}</caption>',
              '<thead><tr><th scope="col">Platform</th>',
@@ -246,11 +248,11 @@ def render_report(report, title='Solver benchmark report'):
             f'<p class="matrix-meta">Input <code>{_text(matrix["input_hash"])}</code></p>',
             _json_details('Matrix and RHS recipe', matrix['case']),
         ))
-        platforms = dict.fromkeys(row['platform_id'] for row in matrix['rows'])
+        platforms = dict.fromkeys(row['comparison_platform_id'] for row in matrix['rows'])
         for platform_id in platforms:
-            rows = [row for row in matrix['rows'] if row['platform_id'] == platform_id]
+            rows = [row for row in matrix['rows'] if row['comparison_platform_id'] == platform_id]
             group = {**matrix, 'rows': rows}
-            parts.extend((f'<h3>{_text(rows[0]["platform"])}</h3>',
+            parts.extend((f'<h3>{_text(rows[0]["comparison_platform"])}</h3>',
                           _table(group, metric_name), _resource_table(group),
                           '<p class="legend"><span class="swatch" aria-hidden="true"></span>'
                           'Green cells mark the best timing on this platform, including ties. '

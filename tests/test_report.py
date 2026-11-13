@@ -114,6 +114,36 @@ class Tables(HTMLParser):
 
 
 class Reports(unittest.TestCase):
+    def test_equivalent_vms_share_comparison_baseline_but_keep_provenance(self):
+        first = add_trial(result('a'), [1] * 6)
+        second = add_trial(result('b'), [2] * 6)
+        first['process']['host'] = 'vm-one'
+        second['process']['host'] = 'vm-two'
+        host = {**HOST, 'cloud': {'provider': 'gcp', 'machine_type': 'n2-standard-16', 'zone': 'one'}}
+        a = self.output('vm-one', [first], host=host)
+        b = self.output('vm-two', [second], host={**host, 'cloud': {**host['cloud'], 'zone': 'two'}})
+        matrix = collect_report([a, b])['matrices'][0]
+        rows = {row['solver']: row for row in matrix['rows']}
+        self.assertNotEqual(rows['a']['platform_id'], rows['b']['platform_id'])
+        self.assertEqual(rows['a']['comparison_platform_id'], rows['b']['comparison_platform_id'])
+        self.assertEqual(rows['b']['relative_times']['solve'], 2)
+        output = self.base / 'vm-report.html'
+        write_report([a, b], output)
+        timing_tables = [t for t in Tables(output.read_text()).tables if t['caption'].startswith('Timings')]
+        self.assertEqual(len(timing_tables), 1)
+
+    def test_trace_failure_is_reported_separately(self):
+        baseline = add_trial(result(), [1] * 6)
+        trace = result(outcome='worker_crashed')
+        trace['instrumentation'] = {'kind': 'trace', 'collectors': ['linux.phase_resources']}
+        directory = self.output('trace-failure', [baseline, trace])
+        row = collect_report([directory])['matrices'][0]['rows'][0]
+        self.assertEqual(row['outcomes'], {'success': 1})
+        self.assertEqual(row['trace_outcomes'], {'worker_crashed': 1})
+        output = self.base / 'trace-failure.html'
+        write_report([directory], output)
+        self.assertIn('Resource/trace: worker_crashed: 1', output.read_text())
+
     def test_medians_pool_trials_and_use_same_trial_critical_path(self):
         first = add_trial(result('a'), [1, 1, 1, 9, 1, 1], index=0)
         add_trial(first, [3, 3, 9, 1, 1, 3], index=1)
@@ -443,7 +473,7 @@ class Reports(unittest.TestCase):
                 paths = write_report([directory], output, metric=metric, title='Precision report')
                 self.assertEqual(paths, (output, output.with_suffix('.json')))
                 exported = self.read_report_json(paths[1])
-                self.assertEqual(exported['schema_version'], '1.0')
+                self.assertEqual(exported['schema_version'], '1.1')
                 self.assertEqual(exported['report_type'], 'solver-benchmark-comparison')
                 self.assertTrue(exported['aggregation'])
                 matrix = exported['matrices'][0]

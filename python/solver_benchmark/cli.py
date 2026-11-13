@@ -9,7 +9,7 @@ import uuid
 
 import rfc8785
 from .profiles import (load_json, validate_profile, resolve_workers, canonical_hash,
-                       version_manifest, host_record, input_hash, digest)
+                       version_manifest, host_record, input_hash, digest, available_physical_cores)
 from .problems import generate_case
 from .accuracy import validate_solution
 from .supervisor import run_worker
@@ -46,6 +46,8 @@ def summarize(result):
 
 def execute(profile_path, deployment_path, output, max_entries=5_000_000):
     profile = validate_profile(load_json(profile_path))
+    core_limit = (available_physical_cores() if any(s['options']['thread_limit'] == 'available_cores'
+                                                    for s in profile['solvers']) else None)
     deployment = load_json(deployment_path)
     workers = resolve_workers(deployment, deployment_path, profile)
     # Validate/materialize all recipes before launching any benchmark process.
@@ -77,6 +79,9 @@ def execute(profile_path, deployment_path, output, max_entries=5_000_000):
             write_json(case_dir/'generation.json', problem.get('generation', {}))
             write_json(case_dir/'identity.json', {'input_hash':ihash, 'reference_hash':canonical_hash(problem['reference'])})
             for solver in profile['solvers']:
+                options = dict(solver['options'])
+                if options['thread_limit'] == 'available_cores':
+                    options['thread_limit'] = core_limit
                 for measurement in profile['passes']:
                     run_dir=output/'runs'/case['id']/solver['id']/measurement['id']
                     run_dir.mkdir(parents=True)
@@ -87,18 +92,18 @@ def execute(profile_path, deployment_path, output, max_entries=5_000_000):
                         'matrix':problem['matrix'],'dense':problem['dense'],
                         'instrumentation':measurement['instrumentation'],
                         'plan':{k:measurement[k] for k in ('warmup_runs','measured_runs','case_timeout_seconds')},
-                        'options':solver['options']}
+                        'options':options}
                     worker = dict(workers[solver['id']])
                     # Apply native thread runtime limits before executable startup.
                     env = dict(worker['environment'])
                     for name in ('OMP_NUM_THREADS','OPENBLAS_NUM_THREADS','MKL_NUM_THREADS','BLIS_NUM_THREADS'):
-                        env[name]=str(solver['options']['thread_limit'])
+                        env[name]=str(options['thread_limit'])
                     worker['environment']=env
                     result=run_worker(worker,request,problem['arrays'],
-                        lambda x: validate_solution(problem,x,solver['options']),run_dir)
+                        lambda x: validate_solution(problem,x,options),run_dir)
                     result.update({'case_id':case['id'],'solver_id':solver['id'],'pass_id':measurement['id'],
                         'provenance':request['provenance'],'instrumentation':measurement['instrumentation'],
-                        'options':solver['options'],'effective_thread_environment':env})
+                        'options':options,'effective_thread_environment':env})
                     result['summary']=summarize(result)
                     write_json(run_dir/'result.json',result)
                     stream.write(json.dumps(result,allow_nan=False)+'\n'); stream.flush()

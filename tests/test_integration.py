@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from solver_benchmark.cli import execute
 from solver_benchmark.profiles import canonical_hash
@@ -15,6 +16,7 @@ WORKER=os.environ.get('SB_EIGEN_WORKER','')
 class EndToEnd(unittest.TestCase):
     def test_profile_to_artifacts(self):
         profile=json.loads((ROOT/'examples/benchmark-profile.json').read_text())
+        profile['solvers'][0]['options']['thread_limit'] = 'available_cores'
         for case in profile['cases']:
             for key in case['generator']['parameters']:
                 if key.startswith('m'): case['generator']['parameters'][key]=3
@@ -28,13 +30,16 @@ class EndToEnd(unittest.TestCase):
             deployment.write_text(json.dumps({'schema_version':'1.0','solvers':{'eigen-sparse-lu':{
                 'executable':str(Path(WORKER).resolve()),'arguments':[],'environment':{}}}}))
             output=base/'results'
-            self.assertEqual(execute(recipe,deployment,output),0)
+            with patch('solver_benchmark.cli.available_physical_cores', return_value=2):
+                self.assertEqual(execute(recipe,deployment,output),0)
             summary=json.loads((output/'summary.json').read_text())
             self.assertEqual(summary['outcomes'],{'success':8})
             self.assertEqual(summary['profile_hash'],canonical_hash(profile))
             rows=[json.loads(line) for line in (output/'results.jsonl').read_text().splitlines()]
             self.assertEqual(len(rows),8)
             for row in rows:
+                self.assertEqual(row['options']['thread_limit'], 2)
+                self.assertEqual(row['effective_thread_environment']['OMP_NUM_THREADS'], '2')
                 self.assertEqual(len(row['summary']['accepted_measured_samples']),1)
                 self.assertEqual(len(row['accuracy']),2)
                 self.assertGreater(row['process']['max_rss_bytes'],0)

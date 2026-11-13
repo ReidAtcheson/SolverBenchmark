@@ -6,7 +6,7 @@ summary for agents and scripts; the original `results.jsonl` files retain raw
 trials. Both reports use one collected summary, including the same column minima
 and relative ratios. No worker or binary input files are required to read them.
 The command can regenerate an existing report pair, but refuses to replace an
-existing JSON file unless it identifies itself as a version 1.0 comparison report.
+existing JSON file unless it identifies itself as a version 1.0 or 1.1 comparison report. New reports use version 1.1; version 1.0 used a matrix-wide baseline for `relative_times`, while version 1.1 uses the comparison-platform baseline.
 For example, `--output results/run/summary.html` is rejected if its automatic
 `summary.json` destination already holds the benchmark run's outcome summary.
 
@@ -14,7 +14,7 @@ For example, `--output results/run/summary.html` is rejected if its automatic
 
 | Field | Meaning |
 | --- | --- |
-| `schema_version` | `"1.0"`, the JSON summary format version. |
+| `schema_version` | `"1.1"`, the JSON summary format version. |
 | `report_type` | `"solver-benchmark-comparison"`, distinguishing this from raw results and run summaries. |
 | `title` | The report title, including a custom `--title`. |
 | `metric` | `"wall_seconds"` by default, or `"cpu_seconds"` with `--metric cpu`. All absolute timings use seconds. |
@@ -33,9 +33,11 @@ matching source. Distinct tolerance settings remain distinct solver rows.
 | Field | Meaning |
 | --- | --- |
 | `platform`, `platform_id`, `host` | Human-readable platform label, hashed platform identity, and full recorded host/affinity metadata. |
+| `comparison_platform`, `comparison_platform_id` | Comparison label and hash of recorded host and affinity metadata excluding the VM hostname and cloud zone. Distinct hosts remain separate rows. |
 | `solver`, `configuration_id`, `configuration` | Solver ID, hashed configuration identity, and options, worker identity/build/dependency hashes, arguments, and recorded environments. |
 | `sources` | Source IDs contributing to this row; join with the top-level `sources[].id`. |
 | `outcomes` | Execution outcome names mapped to counts, including failures and unsupported configurations. |
+| `trace_outcomes` | Trace execution outcome names mapped to counts, separate from baseline outcomes. An empty object indicates no matching trace result. |
 | `samples` | Number of accuracy-accepted measured trials. Individual phase timings can still be missing. |
 | `times` | Fastest accepted measured timings in seconds, keyed by phase. |
 | `median_times` | Median accepted measured timing in seconds for each phase, pooled over all matching sources. |
@@ -57,7 +59,7 @@ sources; for an even count, the middle two values are averaged. Warmups and trac
 passes contribute neither timings nor errors.
 
 For each matrix, `best_times` holds each column's minimum across all solver/platform
-rows, excluding missing values, retained for compatibility. `platform_best_times` maps each platform ID to its own per-column minima. `relative_times` divides by the matching platform baseline: 1 is
+rows, excluding missing values, retained for compatibility. `platform_best_times` maps each comparison platform ID to its own per-column minima. `relative_times` divides by the matching platform baseline: 1 is
 best and 1.2 means 20% slower. Zero ties normalize to 1; positive times against a
 zero baseline have an infinite ratio. Backward errors are always absolute and
 are never normalized by another solver's error.

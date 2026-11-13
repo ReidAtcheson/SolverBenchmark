@@ -147,3 +147,21 @@ def host_record():
             'machine': platform.machine(), 'cpu': cpu,
             'parent_libc': platform.libc_ver(), 'cpu_count': os.cpu_count(),
             'affinity': sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else None}
+
+
+def available_physical_cores(topology_root=Path('/sys/devices/system/cpu')):
+    """Count physical cores represented in this process's CPU affinity mask."""
+    cpus = sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else list(range(os.cpu_count() or 1))
+    cores = set()
+    try:
+        for cpu in cpus:
+            topology = topology_root / f'cpu{cpu}' / 'topology'
+            package = (topology / 'physical_package_id').read_text().strip()
+            core = (topology / 'core_id').read_text().strip()
+            if not package or not core:
+                raise ValueError('empty CPU topology')
+            cores.add((package, core))
+    except (OSError, ValueError):
+        # Outside Linux or when topology is unavailable, use the visible logical CPUs.
+        return max(1, len(cpus))
+    return max(1, len(cores))
