@@ -114,6 +114,89 @@ class Tables(HTMLParser):
 
 
 class Reports(unittest.TestCase):
+    def test_explicit_affinity_comparison_keeps_rows_and_hardware_distinct(self):
+        single = add_trial(result(), [2] * 6)
+        single['process']['affinity'] = [0]
+        single['options']['thread_limit'] = 1
+        full = add_trial(result(), [1] * 6)
+        full['options']['thread_limit'] = 2
+        first = self.output('pinned', [single], host={**HOST, 'affinity': [0]})
+        second = self.output('available', [full])
+        different = self.output('different-hardware', [add_trial(result(), [0.5] * 6)],
+                                host={**HOST, 'cpu': 'Another CPU'})
+        separate = collect_report([first, second, different])['matrices'][0]['rows']
+        self.assertEqual(len({r['comparison_platform_id'] for r in separate}), 3)
+        report = collect_report([first, second, different], compare_affinity=True)
+        rows = report['matrices'][0]['rows']
+        pinned = next(r for r in rows if r['sources'] == [1])
+        available = next(r for r in rows if r['sources'] == [2])
+        other = next(r for r in rows if r['sources'] == [3])
+        self.assertEqual(pinned['comparison_platform_id'], available['comparison_platform_id'])
+        self.assertNotEqual(other['comparison_platform_id'], available['comparison_platform_id'])
+        self.assertNotEqual(pinned['platform_id'], available['platform_id'])
+        self.assertEqual(pinned['host']['affinity'], [0])
+        self.assertEqual(pinned['host']['worker_affinity'], [0])
+        self.assertEqual(pinned['relative_times']['numeric'], 2)
+        self.assertEqual(available['relative_times']['numeric'], 1)
+        self.assertEqual(report['aggregation']['relative_times']['affinity'], 'compare_across_affinities')
+        output = self.base / 'affinity-comparison.html'
+        self.assertEqual(main(['report', str(first), str(second), '--output', str(output),
+                               '--compare-affinity']), 0)
+        html = output.read_text()
+        self.assertIn('different CPU affinities on otherwise matching platforms', html)
+        self.assertIn('Thread limit: 1', html)
+        self.assertIn('Thread limit: 2', html)
+        self.assertIn('Worker CPU affinity: [0]', html)
+        self.assertEqual(len([t for t in Tables(html).tables if t['caption'].startswith('Timings')]), 1)
+
+    def test_recorded_single_core_affinity_compares_only_when_consistent(self):
+        single = add_trial(result(), [2] * 6)
+        single['process']['affinity'] = [0]
+        first = self.output('recorded-pin', [single], host={**HOST, 'affinity': [0]})
+        second = self.output('recorded-available', [add_trial(result(), [1] * 6)])
+        execution_path = first / 'execution.json'
+        execution = json.loads(execution_path.read_text())
+        valid = {'mode': 'single_core', 'original_affinity': [0, 1], 'selected_cpu': 0}
+        def compare(control):
+            execution['affinity_control'] = control
+            execution_path.write_text(json.dumps(execution))
+            return collect_report([first, second])['matrices'][0]['rows']
+        rows = compare(valid)
+        pinned = next(r for r in rows if r['sources'] == [1])
+        available = next(r for r in rows if r['sources'] == [2])
+        self.assertEqual(pinned['comparison_platform_id'], available['comparison_platform_id'])
+        self.assertEqual(pinned['relative_times']['numeric'], 2)
+        self.assertEqual(pinned['host']['affinity'], [0])
+        self.assertEqual(pinned['host']['affinity_control'], valid)
+        for invalid in (
+            {'mode': 'single_core', 'original_affinity': [1, 0], 'selected_cpu': 0},
+            {'mode': 'single_core', 'original_affinity': [0, 0], 'selected_cpu': 0},
+            {'mode': 'single_core', 'original_affinity': [0, True], 'selected_cpu': 0},
+            {'mode': 'single_core', 'original_affinity': [0, 1], 'selected_cpu': 1},
+            {'mode': 'other', 'original_affinity': [0, 1], 'selected_cpu': 0},
+        ):
+            with self.subTest(invalid=invalid):
+                rows = compare(invalid)
+                self.assertEqual(len({r['comparison_platform_id'] for r in rows}), 2)
+        mismatched_worker = add_trial(result(), [2] * 6)
+        mismatch = self.output('worker-mismatch', [mismatched_worker], host={**HOST, 'affinity': [0]})
+        mismatch_path = mismatch / 'execution.json'
+        mismatch_execution = json.loads(mismatch_path.read_text())
+        mismatch_execution['affinity_control'] = valid
+        mismatch_path.write_text(json.dumps(mismatch_execution))
+        rows = collect_report([mismatch, second])['matrices'][0]['rows']
+        self.assertEqual(len({r['comparison_platform_id'] for r in rows}), 2)
+        mismatched_limit = add_trial(result(), [2] * 6)
+        mismatched_limit['process']['affinity'] = [0]
+        mismatched_limit['options']['thread_limit'] = 2
+        mismatch = self.output('limit-mismatch', [mismatched_limit], host={**HOST, 'affinity': [0]})
+        mismatch_path = mismatch / 'execution.json'
+        mismatch_execution = json.loads(mismatch_path.read_text())
+        mismatch_execution['affinity_control'] = valid
+        mismatch_path.write_text(json.dumps(mismatch_execution))
+        rows = collect_report([mismatch, second])['matrices'][0]['rows']
+        self.assertEqual(len({r['comparison_platform_id'] for r in rows}), 2)
+
     def test_equivalent_vms_share_comparison_baseline_but_keep_provenance(self):
         first = add_trial(result('a'), [1] * 6)
         second = add_trial(result('b'), [2] * 6)

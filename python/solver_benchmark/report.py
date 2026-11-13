@@ -199,7 +199,22 @@ def _source_paths(inputs):
     return paths
 
 
-def collect_report(inputs, metric='wall'):
+def _single_core_original_affinity(execution, host, process, options):
+    """Return the pre-pin mask only when the recorded pin is internally consistent."""
+    control = execution.get('affinity_control')
+    if not isinstance(control, dict) or control.get('mode') != 'single_core':
+        return None
+    original, selected = control.get('original_affinity'), control.get('selected_cpu')
+    if (not isinstance(original, list) or not original
+            or any(type(cpu) is not int or cpu < 0 for cpu in original)
+            or original != sorted(set(original)) or type(selected) is not int
+            or selected != original[0] or host.get('affinity') != [selected]
+            or process.get('affinity') != [selected] or options.get('thread_limit') != 1):
+        return None
+    return original
+
+
+def collect_report(inputs, metric='wall', *, compare_affinity=False):
     """Pool comparable runs without mixing inputs, solver settings, or platforms.
 
     Matrix identity is the delivered matrix/RHS input hash. Rows retain all solver
@@ -220,6 +235,8 @@ def collect_report(inputs, metric='wall'):
                                           'reduction': 'minimum_of_same_trial_sum'}},
             'relative_times': {
                 'baseline': 'minimum_per_matrix_platform_column',
+                'affinity': ('compare_across_affinities' if compare_affinity
+                             else 'separate_affinities_except_recorded_single_core'),
                 'zero_best': {'zero_value': 1, 'positive_value': {'nonfinite': '+inf'}}},
             'cpu_utilization': {
                 'definition': 'cpu_seconds_divided_by_wall_seconds_from_same_observation',
@@ -274,8 +291,18 @@ def collect_report(inputs, metric='wall'):
                 process = _object(result.get('process', {}), 'process')
                 platform = {**host, 'hostname': process.get('host'),
                             'worker_affinity': process.get('affinity')}
+                if 'affinity_control' in execution:
+                    platform['affinity_control'] = execution['affinity_control']
                 platform_id = canonical_hash(platform)
                 comparison_platform = {**host, 'worker_affinity': process.get('affinity')}
+                if compare_affinity:
+                    comparison_platform.pop('affinity', None)
+                    comparison_platform.pop('worker_affinity', None)
+                else:
+                    original_affinity = _single_core_original_affinity(execution, host, process, options)
+                    if original_affinity is not None:
+                        comparison_platform['affinity'] = original_affinity
+                        comparison_platform['worker_affinity'] = original_affinity
                 if isinstance(comparison_platform.get('cloud'), dict):
                     comparison_platform['cloud'] = {k: v for k, v in comparison_platform['cloud'].items() if k != 'zone'}
                 comparison_platform_id = canonical_hash(comparison_platform)
@@ -445,7 +472,7 @@ def _json_safe(value):
     return value
 
 
-def write_report(inputs, output, metric='wall', title='Solver benchmark report'):
+def write_report(inputs, output, metric='wall', title='Solver benchmark report', *, compare_affinity=False):
     """Write HTML and sibling JSON from one summary; return both output paths."""
     paths = _source_paths(inputs)
     output = Path(output)
@@ -468,7 +495,7 @@ def write_report(inputs, output, metric='wall', title='Solver benchmark report')
         if not isinstance(previous, dict) or previous.get('report_type') != 'solver-benchmark-comparison' \
                 or previous.get('schema_version') not in ('1.0', '1.1'):
             raise ValueError(f'JSON destination is not an existing comparison report: {json_output}')
-    report = collect_report(paths, metric)
+    report = collect_report(paths, metric, compare_affinity=compare_affinity)
     report['title'] = title
     contents = (render_report(report, title=title),
                 json.dumps(_json_safe(report), indent=2, ensure_ascii=False, allow_nan=False) + '\n')

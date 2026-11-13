@@ -128,6 +128,8 @@ def main(argv=None):
     report.add_argument('--output', required=True, help='destination HTML file; also writes a sibling .json file')
     report.add_argument('--metric', choices=('wall', 'cpu'), default='wall')
     report.add_argument('--title', default='Solver benchmark report')
+    report.add_argument('--compare-affinity', action='store_true',
+                        help='share relative baselines across different CPU affinities on otherwise matching platforms')
     args=parser.parse_args(argv)
     try:
         if args.command=='validate':
@@ -136,7 +138,8 @@ def main(argv=None):
             print(canonical_hash(profile)); return 0
         if args.command=='report':
             from .report import write_report
-            outputs = write_report(args.inputs, args.output, metric=args.metric, title=args.title)
+            outputs = write_report(args.inputs, args.output, metric=args.metric, title=args.title,
+                                   compare_affinity=args.compare_affinity)
             for output in outputs:
                 print(f'Report written to {output}')
             return 0

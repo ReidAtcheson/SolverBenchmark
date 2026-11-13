@@ -75,6 +75,7 @@ class CloudGcpTests(unittest.TestCase):
     def test_single_core_profile_and_inherited_affinity(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, derived = Path(tmp) / 'source.json', Path(tmp) / 'derived.json'
+            provenance, execution = Path(tmp) / 'affinity.json', Path(tmp) / 'execution.json'
             profile = {'solvers': [{'id': 'a', 'options': {'thread_limit': 'available_cores'}},
                                    {'id': 'b', 'options': {'thread_limit': 8}}], 'cases': []}
             source.write_text(json.dumps(profile))
@@ -83,7 +84,8 @@ class CloudGcpTests(unittest.TestCase):
                      'json.loads(subprocess.check_output([sys.executable, "-c", '
                      '"import json,os; print(json.dumps(sorted(os.sched_getaffinity(0))))"]))]))')
             output = subprocess.check_output([sys.executable, str(ROOT / 'cloud/single_core.py'),
-                                              str(source), str(derived), sys.executable, '-c', probe], text=True)
+                                              str(source), str(derived), sys.executable, '-c', probe], text=True,
+                                             env={**os.environ, 'SB_SINGLE_CORE_AFFINITY_PATH': str(provenance)})
             parent_cpus, child_cpus = json.loads(output)
             self.assertEqual(len(parent_cpus), 1)
             self.assertEqual(parent_cpus, child_cpus)
@@ -92,6 +94,29 @@ class CloudGcpTests(unittest.TestCase):
             self.assertEqual([solver['options']['thread_limit'] for solver in actual['solvers']], [1, 1])
             self.assertEqual(actual['cases'], profile['cases'])
             self.assertEqual(json.loads(source.read_text()), profile)
+            expected = {'mode': 'single_core', 'original_affinity': sorted(os.sched_getaffinity(0)),
+                        'selected_cpu': parent_cpus[0]}
+            self.assertEqual(json.loads(provenance.read_text()), expected)
+            execution.write_text(json.dumps({'host': {'affinity': parent_cpus}, 'run_id': 'test'}))
+            subprocess.run([sys.executable, str(ROOT / 'cloud/single_core.py'), '--attach',
+                            str(provenance), str(execution)], check=True)
+            attached = json.loads(execution.read_text())
+            self.assertEqual(attached['affinity_control'], expected)
+            self.assertEqual(attached['host']['affinity'], parent_cpus)
+            self.assertEqual(attached['run_id'], 'test')
+
+    def test_single_core_affinity_attachment_rejects_mismatch_without_modification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            provenance, execution = Path(tmp) / 'affinity.json', Path(tmp) / 'execution.json'
+            provenance.write_text(json.dumps({'mode': 'single_core', 'original_affinity': [0, 1],
+                                               'selected_cpu': 0}))
+            original = json.dumps({'host': {'affinity': [1]}, 'run_id': 'test'})
+            execution.write_text(original)
+            result = subprocess.run([sys.executable, str(ROOT / 'cloud/single_core.py'), '--attach',
+                                     str(provenance), str(execution)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('does not match', result.stderr)
+            self.assertEqual(execution.read_text(), original)
 
     def test_extract_only_report_files(self):
         with tempfile.TemporaryDirectory() as tmp:

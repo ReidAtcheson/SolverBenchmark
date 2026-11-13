@@ -103,6 +103,8 @@ def _row_identity(row):
         f'{_json_details("Platform details", row["host"])}'
         '</td><th scope="row" class="identity">'
         f'<strong>{_text(row["solver"])}</strong>'
+        f'<small>Thread limit: {_text(row["configuration"].get("options", {}).get("thread_limit", "unknown"))}</small>'
+        f'<small>Worker CPU affinity: {_text(row["host"].get("worker_affinity"))}</small>'
         f'<small>Configuration {_text(_short_id(row["configuration_id"]))}</small>'
         f'<small>Sources: {sources}</small>'
         f'<small>Baseline: {_text(outcomes)}</small>'
@@ -231,6 +233,17 @@ def render_report(report, title='Solver benchmark report'):
         '<strong>1</strong> is best and <strong>1.2</strong> is 20% slower. '
         'A dash means no eligible timing and does not affect the best value. '
         'If the best value is zero, zero ties are 1 and positive values are ∞.</p>',
+        ('<p><strong>Affinity comparison:</strong> Relative baselines include rows with '
+         'different CPU affinities on otherwise matching platforms; CPU availability can '
+         'affect the results. Actual worker affinities remain visible in each row.</p>'
+         if report['aggregation']['relative_times']['affinity'] == 'compare_across_affinities'
+         else '<p><strong>Affinity comparison:</strong> Relative baselines keep different '
+              'CPU affinities separate, except for recorded and verified single-core cloud '
+              'runs, which are compared against their original available CPU set.</p>'),
+        '<p>Native-worker phase timings include sampling overhead; allow for uncertainty '
+        'on the order of several microseconds, especially for short phases. This is a '
+        'rule of thumb, not a measured confidence interval or a guaranteed bound; '
+        'scheduling and other effects can cause larger variations.</p>',
         '<p><strong>Worst componentwise backward error</strong> is the maximum over '
         'all RHS columns and measured baseline repetitions across the listed sources, '
         'including rejected solutions. Warmups and trace passes are excluded. '

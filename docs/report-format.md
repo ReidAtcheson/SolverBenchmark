@@ -33,7 +33,7 @@ matching source. Distinct tolerance settings remain distinct solver rows.
 | Field | Meaning |
 | --- | --- |
 | `platform`, `platform_id`, `host` | Human-readable platform label, hashed platform identity, and full recorded host/affinity metadata. |
-| `comparison_platform`, `comparison_platform_id` | Comparison label and hash of recorded host and affinity metadata excluding the VM hostname and cloud zone. Distinct hosts remain separate rows. |
+| `comparison_platform`, `comparison_platform_id` | Comparison label and hash of recorded host metadata excluding VM hostname and cloud zone. Affinity grouping follows the policy described below. Distinct hosts remain separate rows. |
 | `solver`, `configuration_id`, `configuration` | Solver ID, hashed configuration identity, and options, worker identity/build/dependency hashes, arguments, and recorded environments. |
 | `sources` | Source IDs contributing to this row; join with the top-level `sources[].id`. |
 | `outcomes` | Execution outcome names mapped to counts, including failures and unsupported configurations. |
@@ -67,10 +67,26 @@ are never normalized by another solver's error.
 `platform_best_median_times` and `relative_median_times` apply the same rules to
 the median for each row, independently of the minimum-based baselines.
 
+By default, the comparison platform includes the recorded host and worker CPU
+affinities. A single-core cloud run with consistent recorded affinity-control
+metadata is grouped using its original available CPU mask, allowing comparison
+with a run on that same mask. The pinned CPU set is retained in each row.
+Pass `--compare-affinity` when intentionally comparing different
+affinity limits, such as a cloud `--single-core` run against an available-core
+run. This option ignores only those affinity fields when choosing relative
+baselines; hardware and other platform fields still distinguish groups, and the
+original platform identity and recorded affinities remain on each row. The HTML
+and `aggregation.relative_times.affinity` disclose the chosen grouping policy.
+Different CPU sets can affect performance; interpret this comparison accordingly.
+
 ## Numeric representation
 
 Finite values are JSON numbers with their stored precision; HTML displays six
 significant digits. `null` means no eligible timing or no recorded error, not zero.
+Native-worker phase timing includes sampling overhead; allow for uncertainty on
+the order of several microseconds, especially for short phases. This is a rule
+of thumb, not a measured confidence interval or a guaranteed bound; scheduling
+and other effects can cause larger variations.
 System CPU times in short phases can be limited by operating system clock precision;
 independent sampling boundaries and rounding can yield percentages above 100%.
 Nonfinite diagnostics are JSON objects such as `{"nonfinite": "+inf"}`. This keeps

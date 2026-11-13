@@ -352,7 +352,10 @@ Workers may additionally provide `system_cpu_seconds`, a finite nonnegative
 process-wide kernel CPU delta from `getrusage(RUSAGE_SELF)`. This optional field
 is present in the native worker's measured phase and teardown times; older or
 external workers may omit it. Its microsecond-resolution samples and adjacent
-clock reads have small boundary overhead.
+clock reads introduce boundary overhead into the native worker's phase timings.
+Allow for uncertainty on the order of several microseconds, especially for short
+phases. This is a rule of thumb, not a measured confidence interval or a
+guaranteed bound; scheduling and other effects can cause larger variations.
 
 Setup binds one immutable matrix to the new solver instance; no later callback
 accepts another matrix. `pre_analyze` prepares the backend representation, while

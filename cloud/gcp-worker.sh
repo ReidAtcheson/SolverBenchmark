@@ -69,7 +69,8 @@ set +e
 if [[ "$SINGLE_CORE" == 1 ]]; then
   # Derive the actual recorded profile on the VM from the packaged source
   # profile, and restrict the benchmark and all its children to one CPU.
-  /tmp/sb-venv/bin/python cloud/single_core.py "$BENCHMARK_PROFILE" /tmp/sb-single-core-profile.json \
+  SB_SINGLE_CORE_AFFINITY_PATH=/tmp/sb-single-core-affinity.json \
+    /tmp/sb-venv/bin/python cloud/single_core.py "$BENCHMARK_PROFILE" /tmp/sb-single-core-profile.json \
     /tmp/sb-venv/bin/solver-benchmark run /tmp/sb-single-core-profile.json \
     --deployment cloud-deployment.json --output /tmp/sb-result
 else
@@ -80,6 +81,12 @@ set -e
 # Record the actual VM identity in the portable execution metadata. Even if
 # metadata lookup fails, transfer any completed results and report the error.
 if [[ -f /tmp/sb-result/execution.json ]]; then
+  if [[ "$SINGLE_CORE" == 1 ]]; then
+    if ! /tmp/sb-venv/bin/python cloud/single_core.py --attach \
+        /tmp/sb-single-core-affinity.json /tmp/sb-result/execution.json; then
+      status=1
+    fi
+  fi
   if ! /tmp/sb-venv/bin/python -m solver_benchmark.gcp_metadata /tmp/sb-result/execution.json; then
     status=1
   fi

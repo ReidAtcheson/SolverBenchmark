@@ -87,6 +87,16 @@ For a single-core comparison, add `--single-core` to the launcher and choose a
 new output directory. The worker derives a profile setting every solver's thread
 limit to 1, and pins the benchmark process and its children to one available
 logical CPU. The returned `profile.json` records the derived solver limits.
+The returned `execution.json` records `affinity_control.mode` as `single_core`,
+the original allowed CPU mask in `affinity_control.original_affinity`, and the
+selected CPU in `affinity_control.selected_cpu`. The host and worker affinities
+continue to record the actual pinned mask.
+The report compares single-core runs carrying affinity-control metadata with
+available-core runs using the same original CPU mask. For older single-core
+results without that metadata, pass `--compare-affinity` to
+`solver-benchmark report` alongside all their result directories. This option
+shares relative baselines across affinity settings on otherwise matching
+platforms. Each row displays its actual worker affinity and solver thread limit.
 
 Only `results.jsonl`, `execution.json`, `profile.json`, and
 `version-manifest.json` are returned for each machine. Matrices and worker traces
