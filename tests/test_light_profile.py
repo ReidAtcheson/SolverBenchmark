@@ -18,10 +18,12 @@ class LightProfileTests(unittest.TestCase):
         expected = {case['id'] for name in ('benchmark-profile.json', 'comparison-profile.json')
                     for case in read(name)['cases']}
         self.assertEqual({case['id'] for case in profile['cases']}, expected)
-        self.assertEqual(len(profile['passes']), 1)
+        self.assertEqual(len(profile['passes']), 2)
         timing = profile['passes'][0]
         self.assertEqual(timing['instrumentation']['kind'], 'baseline')
         self.assertEqual((timing['warmup_runs'], timing['measured_runs']), (1, 5))
+        self.assertEqual(profile['passes'][1]['instrumentation'],
+                         {'kind': 'trace', 'collectors': ['linux.phase_resources']})
         for case in profile['cases']:
             with self.subTest(case=case['id']):
                 self.assertEqual(case['rhs']['count'], 1)

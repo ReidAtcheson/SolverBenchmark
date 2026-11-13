@@ -110,21 +110,25 @@ def _row_identity(row):
     )
 
 
-def _timing_cell(value, best, ratio, *, relative, critical):
+def _timing_cell(value, best, ratio, median, median_best, median_ratio, *, critical):
     classes = ['timing']
     if critical:
         classes.append('critical')
-    if value is None:
-        classes.append('missing')
-        label, tooltip = '—', 'No accepted measured timing'
-    else:
-        if value == best:
-            classes.append('best')
-        if relative:
-            label = '∞' if math.isinf(ratio) else f'{ratio:.6g}'
-            tooltip = f'{value!r} seconds / column best {best!r} seconds'
-        else:
-            label, tooltip = f'{value:.6g}', f'{value!r} seconds'
+    if value is None: classes.append('missing')
+    elif value == best: classes.append('best')
+    spans = []
+    for stat, number, baseline, normalized in (('min', value, best, ratio),
+                                               ('median', median, median_best, median_ratio)):
+        tooltip = ('No accepted measured timing' if number is None else
+                   f'{number!r} seconds / column best {baseline!r} seconds')
+        for mode in ('absolute', 'relative'):
+            item = number if mode == 'absolute' else normalized
+            label = '—' if item is None else '∞' if math.isinf(item) else f'{item:.6g}'
+            hidden = '' if stat == 'min' and mode == 'absolute' else ' hidden'
+            spans.append(f'<span class="{mode}" data-stat="{stat}" data-best="{str(number is not None and number == baseline).lower()}" '
+                         f'data-missing="{str(number is None).lower()}" data-tooltip="{_text(tooltip)}"{hidden}>{label}</span>')
+    label = ''.join(spans)
+    tooltip = 'No accepted measured timing' if value is None else f'{value!r} seconds / column best {best!r} seconds'
     return f'<td class="{" ".join(classes)}" title="{_text(tooltip)}">{label}</td>'
 
 
@@ -136,10 +140,10 @@ def _error_cell(value):
             f'(dimensionless): {_text(value)}">{label}</td>')
 
 
-def _table(matrix, metric_name, *, relative):
-    rows, best = matrix['rows'], matrix['best_times']
-    caption = ('Relative timings — ratio to column best' if relative
-               else f'Absolute timings — {metric_name} in seconds')
+def _table(matrix, metric_name):
+    rows, best = matrix['rows'], matrix['platform_best_times'][matrix['rows'][0]['platform_id']]
+    median_best = matrix['platform_best_median_times'][matrix['rows'][0]['platform_id']]
+    caption = f'Timings — {metric_name} (seconds or ratio to column best)'
     parts = ['<div class="table-scroll"><table>', f'<caption>{caption}</caption>',
              '<thead><tr><th scope="col">Platform</th>',
              '<th scope="col" class="identity">Solver / configuration</th>',
@@ -154,8 +158,30 @@ def _table(matrix, metric_name, *, relative):
                       _error_cell(row['worst_componentwise_backward_error'])))
         for phase, _ in COLUMNS:
             parts.append(_timing_cell(row['times'][phase], best[phase], row['relative_times'][phase],
-                                      relative=relative,
+                                      row['median_times'][phase], median_best[phase], row['relative_median_times'][phase],
                                       critical=phase == 'critical_path'))
+        parts.append('</tr>')
+    parts.append('</tbody></table></div>')
+    return '\n'.join(parts)
+
+
+def _resource_table(matrix):
+    columns = [('cpu_utilization', phase, label) for phase, label in COLUMNS]
+    columns += [('phase_rss_after_bytes', phase, label) for phase, label in COLUMNS[:-1]]
+    columns += [('process_resources', 'cpu_utilization', 'Process CPU / wall'),
+                ('process_resources', 'max_rss_bytes', 'Process peak RSS')]
+    parts = ['<div class="table-scroll"><table><caption>Resource utilization</caption>',
+             '<thead><tr><th>Platform</th><th>Solver / configuration</th><th>Accepted runs</th>']
+    for group, key, label in columns:
+        prefix = 'CPU / wall: ' if group == 'cpu_utilization' else 'RSS after: ' if group == 'phase_rss_after_bytes' else ''
+        parts.append(f'<th scope="col">{prefix}{label}</th>')
+    parts.append('</tr></thead><tbody>')
+    for row in matrix['rows']:
+        parts.extend(('<tr>', _row_identity(row)))
+        for group, key, _ in columns:
+            value = row[group][key]
+            label = '—' if value is None else f'{value / (1048576 if "rss" in group or key == "max_rss_bytes" else 1):.6g}'
+            parts.append(f'<td class="timing">{label}</td>')
         parts.append('</tr>')
     parts.append('</tbody></table></div>')
     return '\n'.join(parts)
@@ -171,8 +197,10 @@ def render_report(report, title='Solver benchmark report'):
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f'<title>{_text(title)}</title>', f'<style>{_STYLE}</style></head><body><main>',
         '<header><p class="eyebrow">SolverBenchmark</p>', f'<h1>{_text(title)}</h1>',
-        '<p class="lead">Compare solver performance across platforms, with one pair of '
-        'timing tables for each matrix input.</p>',
+        '<p class="lead">Compare solver performance within each platform, with '
+        'timing and resource tables for each matrix input.</p>',
+        '<button type="button" id="toggle-relative" aria-pressed="false">Show relative timings</button>',
+        '<button type="button" id="toggle-median" aria-pressed="false">Show median timings</button>',
         '<div class="stats">',
         f'<span class="stat"><strong>{len(sources)}</strong> benchmark outputs</span>',
         f'<span class="stat"><strong>{len(matrices)}</strong> matrix comparisons</span>',
@@ -181,29 +209,30 @@ def render_report(report, title='Solver benchmark report'):
         '<section class="method" aria-labelledby="method-title">',
         '<h2 id="method-title">How to read this report</h2>',
         '<p>Only accepted measured trials from baseline passes contribute timings. '
-        'Warmup runs and trace passes are excluded. Each phase shows its fastest '
-        'eligible repetition across the listed sources; different phases may come '
-        'from different repetitions. Earlier accepted trials remain eligible if '
+        'Warmup runs and trace passes are excluded. Each phase shows either the minimum or '
+        'median of eligible repetitions pooled across the listed sources; different phases may use '
+        'different repetitions. Even-sized medians average the middle two values. Earlier accepted trials remain eligible if '
         'a later trial fails; execution outcomes are shown beside each solver.</p>',
-        '<p><strong>Critical path</strong> is the fastest same-trial sum of '
+        '<p><strong>Critical path</strong> is the minimum or median of same-trial sums of '
         '<strong>analysis + numeric + solve</strong>. It excludes setup, pre-analysis, '
-        'teardown, IPC, and parent validation. It is not a sum of independent phase minima.</p>',
+        'teardown, IPC, and parent validation. It is not a sum of independently reduced phase values.</p>',
         '<p>Relative timings divide each value by the best value in that column across '
-        'all solver and platform rows in the same matrix comparison: '
+        'solver rows on the same platform and matrix input, using the selected statistic: '
         '<strong>1</strong> is best and <strong>1.2</strong> is 20% slower. '
         'A dash means no eligible timing and does not affect the best value. '
         'If the best value is zero, zero ties are 1 and positive values are ∞.</p>',
         '<p><strong>Worst componentwise backward error</strong> is the maximum over '
         'all RHS columns and measured baseline repetitions across the listed sources, '
         'including rejected solutions. Warmups and trace passes are excluded. '
-        'This dimensionless error is shown as an absolute value in both tables; '
+        'This dimensionless error is shown as an absolute value; '
         'it is not normalized. A dash means no error was recorded; ∞ retains an '
         'infinite error or failed-verification diagnostic.</p>',
         '<p>Input hashes include matrix and RHS data. Different input hashes '
         'have separate comparisons. Solver tolerance settings remain in each '
         'configuration; achieved errors are shown alongside timings. Platform and solver '
         'configuration details identify the measurements being pooled. '
-        f'Trace results excluded: <strong>{_text(report["excluded_trace_results"])}</strong>.</p>',
+        f'Trace results excluded from timings: <strong>{_text(report["excluded_trace_results"])}</strong>.</p>',
+        '<p>CPU / wall is process CPU seconds divided by wall seconds for the same observation: 1 means one CPU core on average, and values above 1 mean more than one core. Each phase uses the eligible accepted baseline trial with the shortest positive wall time; critical path uses the same-trial sums of analysis, numeric and solve. Process CPU / wall uses the successful baseline process with accepted trials and shortest positive lifetime wall time. Process values include startup, warmup and work outside measured phases. RSS values are MiB. RSS after each phase is the minimum boundary snapshot from accepted trace trials, not a phase peak. Process peak RSS is the minimum lifetime peak across successful baseline processes with accepted trials. A dash means no eligible measurement.</p>',
         '</section>',
     ]
     if not matrices:
@@ -216,18 +245,37 @@ def render_report(report, title='Solver benchmark report'):
             f'<h2 id="matrix-{index}">{_text(names)}</h2>',
             f'<p class="matrix-meta">Input <code>{_text(matrix["input_hash"])}</code></p>',
             _json_details('Matrix and RHS recipe', matrix['case']),
-            _table(matrix, metric_name, relative=False),
-            _table(matrix, metric_name, relative=True),
-            '<p class="legend"><span class="swatch" aria-hidden="true"></span>'
-            'Green cells mark the best timing, including ties. '
-            'Values show six significant digits; hover over a timing for its stored value.</p>',
-            '</section>',
         ))
+        platforms = dict.fromkeys(row['platform_id'] for row in matrix['rows'])
+        for platform_id in platforms:
+            rows = [row for row in matrix['rows'] if row['platform_id'] == platform_id]
+            group = {**matrix, 'rows': rows}
+            parts.extend((f'<h3>{_text(rows[0]["platform"])}</h3>',
+                          _table(group, metric_name), _resource_table(group),
+                          '<p class="legend"><span class="swatch" aria-hidden="true"></span>'
+                          'Green cells mark the best timing on this platform, including ties. '
+                          'Values show six significant digits; hover over a timing for its stored value.</p>'))
+        parts.append('</section>')
     parts.extend(('<section class="sources" aria-labelledby="sources-title">',
                   '<h2 id="sources-title">Benchmark sources</h2>',
                   '<p class="muted">Source numbers in each row refer to these collected outputs.</p><ol>'))
     for index, source in enumerate(sources, 1):
         parts.append(f'<li id="source-{index}"><code>{_text(source["path"])}</code><br>'
                      f'<small>Run ID: {_text(source["run_id"])}</small></li>')
-    parts.extend(('</ol></section>', '</main></body></html>'))
+    parts.extend(('</ol></section>', '</main><script>\n'
+                  'const relativeButton = document.getElementById("toggle-relative");'
+                  'const medianButton = document.getElementById("toggle-median");'
+                  'function refreshTimings() {'
+                  'const relative = relativeButton.getAttribute("aria-pressed") === "true";'
+                  'const median = medianButton.getAttribute("aria-pressed") === "true";'
+                  'relativeButton.textContent = relative ? "Show absolute timings" : "Show relative timings";'
+                  'medianButton.textContent = median ? "Show minimum timings" : "Show median timings";'
+                  'document.querySelectorAll("td.timing span[data-stat]").forEach(e => {'
+                  'e.hidden = (e.dataset.stat === "median") !== median || e.classList.contains("relative") !== relative;'
+                  'if (!e.hidden) { const cell = e.parentElement; cell.classList.toggle("best", e.dataset.best === "true");'
+                  'cell.classList.toggle("missing", e.dataset.missing === "true"); cell.title = e.dataset.tooltip; }'
+                  '}); }'
+                  '[relativeButton, medianButton].forEach(button => button.addEventListener("click", function () {'
+                  'this.setAttribute("aria-pressed", String(this.getAttribute("aria-pressed") !== "true")); refreshTimings();'
+                  '}));</script></body></html>'))
     return '\n'.join(parts) + '\n'

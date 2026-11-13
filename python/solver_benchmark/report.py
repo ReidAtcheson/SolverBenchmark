@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter
 import json
 import math
+import statistics
 from pathlib import Path
 import tempfile
 
@@ -75,8 +76,8 @@ def _time(record, metric):
     return value
 
 
-def _measurements(result, metric):
-    """Return independent phase minima and the minimum complete trial core sum."""
+def _measurement_samples(result, metric):
+    """Return eligible phase observations and complete same-trial core sums."""
     accepted = set()
     for record in result.get('accuracy', []):
         index = _trial_index(record)
@@ -106,18 +107,56 @@ def _measurements(result, metric):
             value = _time(record, metric)
             if value is not None:
                 trials.setdefault(index, {})[phase] = value
-    minima = dict.fromkeys((*PHASES, 'critical_path'))
+    samples = {phase: [] for phase in (*PHASES, 'critical_path')}
     for times in trials.values():
         for phase, value in times.items():
-            if minima[phase] is None or value < minima[phase]:
-                minima[phase] = value
+            samples[phase].append(value)
         if all(phase in times for phase in CORE_PHASES):
             core = sum(times[phase] for phase in CORE_PHASES)
             if not math.isfinite(core):
                 raise ValueError('critical path sum must be finite')
-            if minima['critical_path'] is None or core < minima['critical_path']:
-                minima['critical_path'] = core
-    return minima, len(accepted)
+            samples['critical_path'].append(core)
+    return samples, len(accepted)
+
+
+def _measurements(result, metric):
+    samples, accepted = _measurement_samples(result, metric)
+    return {phase: min(values, default=None) for phase, values in samples.items()}, accepted
+
+
+def _median(values):
+    if not values:
+        return None
+    low, high = statistics.median_low(values), statistics.median_high(values)
+    return low + (high - low) / 2
+
+
+def _utilization_samples(result):
+    """Pair CPU and wall from the same accepted trial, including the core sum."""
+    accepted = {_trial_index(r) for r in result.get('accuracy', [])
+                if _trial_index(r) is not None and r.get('accuracy', {}).get('accepted') is True}
+    trials = {}
+    for phase_name, records in ((None, result.get('phases', [])), ('teardown', result.get('teardowns', []))):
+        for record in records:
+            index = _trial_index(record)
+            phase = phase_name or record.get('phase')
+            if index not in accepted or phase not in PHASES or record.get('completed') is not True:
+                continue
+            if phase != 'teardown':
+                statuses = ('success',) if phase == 'solve' else ('success', 'not_applicable')
+                if _object(record.get('result', {}), 'phase result').get('status') not in statuses:
+                    continue
+            wall, cpu = _time(record, 'wall_seconds'), _time(record, 'cpu_seconds')
+            if wall is not None and cpu is not None:
+                trials.setdefault(index, {})[phase] = (wall, cpu)
+    pairs = dict.fromkeys((*PHASES, 'critical_path'))
+    for phases in trials.values():
+        if all(phase in phases for phase in CORE_PHASES):
+            phases['critical_path'] = tuple(sum(phases[p][i] for p in CORE_PHASES) for i in (0, 1))
+        for phase, pair in phases.items():
+            if pair[0] > 0 and (pairs[phase] is None or pair[0] < pairs[phase][0]):
+                pairs[phase] = pair
+    return pairs
 
 
 def _worst_componentwise_backward_error(result):
@@ -172,11 +211,17 @@ def collect_report(inputs, metric='wall'):
         'aggregation': {
             'pass_kind': 'baseline', 'trial_kind': 'measured',
             'timings': {'accuracy_accepted_only': True, 'phase_reduction': 'minimum',
+                        'additional_reduction': 'median_of_pooled_trial_observations',
                         'critical_path': {'phases': list(CORE_PHASES),
                                           'reduction': 'minimum_of_same_trial_sum'}},
             'relative_times': {
-                'baseline': 'minimum_per_matrix_column_across_all_rows',
+                'baseline': 'minimum_per_matrix_platform_column',
                 'zero_best': {'zero_value': 1, 'positive_value': {'nonfinite': '+inf'}}},
+            'cpu_utilization': {
+                'definition': 'cpu_seconds_divided_by_wall_seconds_from_same_observation',
+                'phase_selection': 'accepted_baseline_trial_with_minimum_positive_wall_seconds',
+                'critical_path': 'same_trial_core_cpu_sum_divided_by_core_wall_sum',
+                'process_selection': 'successful_baseline_process_with_accepted_trials_and_minimum_positive_wall_seconds'},
             'worst_componentwise_backward_error': {
                 'reduction': 'maximum_over_rhs_trials_and_sources',
                 'includes_rejected_trials': True},
@@ -201,8 +246,7 @@ def collect_report(inputs, metric='wall'):
                 kind = _object(result.get('instrumentation'), 'instrumentation').get('kind')
                 if kind == 'trace':
                     report['excluded_trace_results'] += 1
-                    continue
-                if kind != 'baseline':
+                if kind not in ('baseline', 'trace'):
                     raise ValueError(f'unknown instrumentation kind: {kind!r}')
                 case_id = _text(result.get('case_id'), 'case_id')
                 solver = _text(result.get('solver_id'), 'solver_id')
@@ -246,43 +290,118 @@ def collect_report(inputs, metric='wall'):
                         'solver': solver, 'configuration': configuration,
                         'configuration_id': configuration_id, 'sources': set(),
                         'outcomes': Counter(), 'samples': 0,
+                        '_baseline': False,
                         'worst_componentwise_backward_error': None,
-                        'times': dict.fromkeys((*PHASES, 'critical_path'))}
+                        'times': dict.fromkeys((*PHASES, 'critical_path')),
+                        '_timing_samples': {phase: [] for phase in (*PHASES, 'critical_path')},
+                        'cpu_times': dict.fromkeys((*PHASES, 'critical_path')),
+                        '_utilization_pairs': dict.fromkeys((*PHASES, 'critical_path')),
+                        '_process_utilization_pair': None,
+                        'phase_rss_after_bytes': dict.fromkeys(PHASES),
+                        'process_resources': dict.fromkeys(('cpu_seconds', 'max_rss_bytes'))}
                 row = matrix['rows'][row_key]
                 row['sources'].add(source_number)
+                if kind == 'trace':
+                    accepted = {_trial_index(a) for a in result.get('accuracy', [])
+                                if _trial_index(a) is not None and a.get('accuracy', {}).get('accepted') is True}
+                    for phase_name, records in ((None, result.get('phases', [])),
+                                                ('teardown', result.get('teardowns', []))):
+                        for record in records:
+                            phase = phase_name or record.get('phase')
+                            if (_trial_index(record) not in accepted or phase not in PHASES
+                                    or record.get('completed') is not True):
+                                continue
+                            if phase != 'teardown' and record.get('result', {}).get('status') not in ('success', 'not_applicable'):
+                                continue
+                            value = (record.get('observations') or {}).get('rss_after_bytes')
+                            if value is not None:
+                                if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                                    raise ValueError('rss_after_bytes must be finite and nonnegative')
+                                old = row['phase_rss_after_bytes'][phase]
+                                row['phase_rss_after_bytes'][phase] = value if old is None else min(old, value)
+                    continue
+                row['_baseline'] = True
                 row['outcomes'][_text(result.get('outcome'), 'outcome')] += 1
                 error = _worst_componentwise_backward_error(result)
                 if error is not None and (row['worst_componentwise_backward_error'] is None
                                          or error > row['worst_componentwise_backward_error']):
                     row['worst_componentwise_backward_error'] = error
-                times, samples = _measurements(result, timing)
+                timing_samples, samples = _measurement_samples(result, timing)
+                for phase, values in timing_samples.items():
+                    row['_timing_samples'][phase].extend(values)
                 row['samples'] += samples
-                for phase, value in times.items():
-                    if value is not None and (row['times'][phase] is None or value < row['times'][phase]):
-                        row['times'][phase] = value
+                cpu_times, _ = _measurements(result, 'cpu_seconds')
+                for phase, pair in _utilization_samples(result).items():
+                    old = row['_utilization_pairs'][phase]
+                    if pair is not None and (old is None or pair[0] < old[0]):
+                        row['_utilization_pairs'][phase] = pair
+                for phase, value in cpu_times.items():
+                    old = row['cpu_times'][phase]
+                    if value is not None and (old is None or value < old):
+                        row['cpu_times'][phase] = value
+                if samples and result.get('outcome') == 'success':
+                    user, system = process.get('user_cpu_seconds'), process.get('system_cpu_seconds')
+                    values = {'cpu_seconds': user + system if user is not None and system is not None else None,
+                              'max_rss_bytes': process.get('max_rss_bytes')}
+                    wall = process.get('wall_seconds')
+                    if wall is not None and (type(wall) not in (int, float) or not math.isfinite(wall) or wall < 0):
+                        raise ValueError('process wall_seconds must be finite and nonnegative')
+                    old = row['_process_utilization_pair']
+                    if wall and values['cpu_seconds'] is not None and (old is None or wall < old[0]):
+                        row['_process_utilization_pair'] = (wall, values['cpu_seconds'])
+                    for key, value in values.items():
+                        if value is not None:
+                            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                                raise ValueError(f'{key} must be finite and nonnegative')
+                            old = row['process_resources'][key]
+                            row['process_resources'][key] = value if old is None else min(old, value)
             if count == 0:
                 raise ValueError('no benchmark results found')
         except (OSError, ValueError, TypeError, KeyError) as exc:
             raise ValueError(f'{path}: {exc}') from exc
     for matrix in matrices.values():
         matrix['case_ids'] = sorted(matrix['case_ids'])
-        matrix['rows'] = sorted(matrix['rows'].values(), key=lambda row: (
+        matrix['rows'] = sorted((row for row in matrix['rows'].values() if row.pop('_baseline')), key=lambda row: (
             row['platform'], row['platform_id'], row['solver'], row['configuration_id']))
+        for row in matrix['rows']:
+            samples = row.pop('_timing_samples')
+            row['times'] = {phase: min(values, default=None) for phase, values in samples.items()}
+            row['median_times'] = {phase: _median(values) for phase, values in samples.items()}
         matrix['best_times'] = {
             phase: min((row['times'][phase] for row in matrix['rows']
                         if row['times'][phase] is not None), default=None)
             for phase in (*PHASES, 'critical_path')}
+        matrix['platform_best_times'] = {
+            platform_id: {phase: min((r['times'][phase] for r in matrix['rows']
+                                      if r['platform_id'] == platform_id and r['times'][phase] is not None), default=None)
+                          for phase in (*PHASES, 'critical_path')}
+            for platform_id in sorted({r['platform_id'] for r in matrix['rows']})}
+        matrix['platform_best_median_times'] = {
+            platform_id: {phase: min((r['median_times'][phase] for r in matrix['rows']
+                                      if r['platform_id'] == platform_id and r['median_times'][phase] is not None), default=None)
+                          for phase in (*PHASES, 'critical_path')}
+            for platform_id in sorted({r['platform_id'] for r in matrix['rows']})}
         for row in matrix['rows']:
+            row['cpu_utilization'] = {phase: None if pair is None else pair[1] / pair[0]
+                                      for phase, pair in row.pop('_utilization_pairs').items()}
+            pair = row.pop('_process_utilization_pair')
+            row['process_resources']['cpu_utilization'] = None if pair is None else pair[1] / pair[0]
             row['sources'] = sorted(row['sources'])
             row['outcomes'] = dict(sorted(row['outcomes'].items()))
             row['relative_times'] = {}
+            row['relative_median_times'] = {}
             for phase, value in row['times'].items():
-                best = matrix['best_times'][phase]
+                best = matrix['platform_best_times'][row['platform_id']][phase]
                 row['relative_times'][phase] = (
                     None if value is None else
                     1.0 if value == best else
                     math.inf if best == 0 else value / best)
-    report['matrices'] = sorted(matrices.values(), key=lambda matrix: (
+                value = row['median_times'][phase]
+                best = matrix['platform_best_median_times'][row['platform_id']][phase]
+                row['relative_median_times'][phase] = (
+                    None if value is None else 1.0 if value == best else
+                    math.inf if best == 0 else value / best)
+    report['matrices'] = sorted((m for m in matrices.values() if m['rows']), key=lambda matrix: (
         matrix['case_ids'], matrix['input_hash']))
     return report
 

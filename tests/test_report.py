@@ -63,8 +63,11 @@ def add_trial(row, values, *, index=0, kind='measured', accepted=True, errors=No
 class Tables(HTMLParser):
     """Read actual rendered table cells without depending on CSS or whitespace."""
 
-    def __init__(self, html):
+    def __init__(self, html, relative=False, median=False):
         super().__init__()
+        self.relative = relative
+        self.median = median
+        self.skip = False
         self.tables = []
         self.cells = []
         self.table = self.row = self.cell = None
@@ -72,6 +75,9 @@ class Tables(HTMLParser):
         self.feed(html)
 
     def handle_starttag(self, tag, attrs):
+        if tag == 'span' and dict(attrs).get('class') in ('absolute', 'relative'):
+            self.skip = ((dict(attrs)['class'] == 'relative') != self.relative or
+                         (dict(attrs).get('data-stat') == 'median') != self.median)
         if tag == 'table':
             self.table = {'caption': '', 'rows': []}
             self.tables.append(self.table)
@@ -88,10 +94,12 @@ class Tables(HTMLParser):
     def handle_data(self, data):
         if self.caption:
             self.table['caption'] += data
-        if self.cell is not None:
+        if self.cell is not None and not self.skip:
             self.cell += data
 
     def handle_endtag(self, tag):
+        if tag == 'span':
+            self.skip = False
         if tag == 'caption':
             self.caption = False
         elif tag in ('td', 'th') and self.cell is not None:
@@ -106,6 +114,73 @@ class Tables(HTMLParser):
 
 
 class Reports(unittest.TestCase):
+    def test_medians_pool_trials_and_use_same_trial_critical_path(self):
+        first = add_trial(result('a'), [1, 1, 1, 9, 1, 1], index=0)
+        add_trial(first, [3, 3, 9, 1, 1, 3], index=1)
+        rejected = add_trial(first, [100] * 6, index=2, accepted=False)
+        second = add_trial(result('a'), [5, 5, 1, 1, 9, 5], index=0)
+        other = add_trial(result('b'), [2, 2, 2, 2, 2, 2])
+        run1 = self.output('median-one', [rejected, other])
+        run2 = self.output('median-two', [second])
+        output = self.base / 'median.html'
+        write_report([run1, run2], output)
+        matrix = self.read_report_json(output.with_suffix('.json'))['matrices'][0]
+        rows = {row['solver']: row for row in matrix['rows']}
+        self.assertEqual(rows['a']['times']['setup'], 1)
+        self.assertEqual(rows['a']['median_times']['setup'], 3)
+        self.assertEqual(rows['a']['median_times']['critical_path'], 11)
+        self.assertEqual(rows['a']['relative_median_times']['setup'], 1.5)
+        self.assertEqual(rows['a']['relative_median_times']['critical_path'], 11 / 6)
+        html = output.read_text(encoding='utf-8')
+        self.assertIn('Show median timings', html)
+        for relative, median, expected in ((False, False, '1'), (True, False, '1'),
+                                           (False, True, '3'), (True, True, '1.5')):
+            table = Tables(html, relative=relative, median=median).tables[0]
+            row = next(row for row in table['rows'] if row[1].startswith('a'))
+            self.assertEqual(row[-7], expected)
+
+    def test_even_median_averages_middle_values(self):
+        row = add_trial(result(), [1] * 6, index=0)
+        add_trial(row, [7] * 6, index=1)
+        directory = self.output('even-median', [row])
+        result_row = collect_report([directory])['matrices'][0]['rows'][0]
+        self.assertEqual(result_row['median_times']['analysis'], 4)
+        self.assertEqual(result_row['median_times']['critical_path'], 12)
+
+    def test_resource_aggregation_and_trace_boundaries(self):
+        baseline = add_trial(result(), [1, 2, 3, 4, 5, 6])
+        baseline['process'].update(user_cpu_seconds=7, system_cpu_seconds=2, wall_seconds=3, max_rss_bytes=10485760)
+        trace = add_trial(result(), [9] * 6)
+        trace['instrumentation'] = {'kind': 'trace', 'collectors': ['linux.phase_resources']}
+        for record in trace['phases'] + trace['teardowns']:
+            record['observations'] = {'rss_after_bytes': 2097152}
+        directory = self.output('resources', [baseline, trace])
+        row = collect_report([directory])['matrices'][0]['rows'][0]
+        self.assertEqual(row['cpu_times']['analysis'], 6)
+        self.assertEqual(row['phase_rss_after_bytes']['numeric'], 2097152)
+        self.assertEqual(row['process_resources'], {'cpu_seconds': 9, 'max_rss_bytes': 10485760, 'cpu_utilization': 3})
+        self.assertEqual(row['cpu_utilization']['analysis'], 2)
+        self.assertEqual(row['cpu_utilization']['critical_path'], 2)
+        self.assertEqual(row['times']['analysis'], 3)
+        output = self.base / 'resources.html'
+        write_report([directory], output)
+        html = output.read_text(encoding='utf-8')
+        self.assertIn('Show relative timings', html)
+        self.assertIn('boundary snapshot', html)
+        self.assertIn('Resource utilization', html)
+
+    def test_utilization_uses_paired_fastest_positive_wall_trial(self):
+        baseline = add_trial(result(), [2] * 6, index=0)
+        add_trial(baseline, [1] * 6, index=1)
+        baseline['phases'][2]['times']['cpu_seconds'] = 0.1
+        baseline['phases'][7]['times']['cpu_seconds'] = 3
+        baseline['phases'][5]['times']['wall_seconds'] = 0
+        directory = self.output('paired', [baseline])
+        row = collect_report([directory])['matrices'][0]['rows'][0]
+        self.assertEqual(row['cpu_times']['analysis'], 0.1)
+        self.assertEqual(row['cpu_utilization']['analysis'], 3)
+        self.assertEqual(row['cpu_utilization']['setup'], 2)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -293,7 +368,7 @@ class Reports(unittest.TestCase):
                 self.assertNotIn('Absolute tolerance:', html)
                 parsed = Tables(html)
                 self.assertEqual(len(parsed.tables), 2)
-                for table in parsed.tables:
+                for table in parsed.tables[:1]:
                     self.assertEqual(' '.join(table['rows'][0][-8].split()),
                                      'Worst componentwise backward error')
                     for solver, value in expected.items():
@@ -383,7 +458,7 @@ class Reports(unittest.TestCase):
                 self.assertEqual(set(precise['relative_times']), set(TIMINGS))
                 tables = Tables(paths[0].read_text(encoding='utf-8')).tables
                 self.assertEqual(len(tables), 2)
-                for table, key in zip(tables, ('times', 'relative_times')):
+                for table, key in ((tables[0], 'times'), (Tables(paths[0].read_text(encoding='utf-8'), relative=True).tables[0], 'relative_times')):
                     for json_row in matrix['rows']:
                         html_row = next(row for row in table['rows']
                                         if row[1].startswith(json_row['solver']))
@@ -415,8 +490,8 @@ class Reports(unittest.TestCase):
         self.assertEqual(rows['failed']['times'], dict.fromkeys(TIMINGS))
         self.assertEqual(rows['failed']['relative_times'], dict.fromkeys(TIMINGS))
         self.assertIsNone(rows['unavailable']['worst_componentwise_backward_error'])
-        relative = next(table for table in Tables(output.read_text(encoding='utf-8')).tables
-                        if table['caption'].startswith('Relative'))
+        relative = next(table for table in Tables(output.read_text(encoding='utf-8'), relative=True).tables
+                        if table['caption'].startswith('Timings'))
         positive = next(row for row in relative['rows'] if row[1].startswith('positive'))
         failed = next(row for row in relative['rows'] if row[1].startswith('failed'))
         self.assertEqual(positive[-7:], ['∞'] * 7)
@@ -456,7 +531,9 @@ class Reports(unittest.TestCase):
         timing_tables = [table for table in tables
                          if any('solver-a' in cell for row in table['rows'] for cell in row)]
         self.assertEqual(len(timing_tables), 2)
-        absolute, relative = timing_tables
+        absolute = timing_tables[0]
+        relative = next(table for table in Tables(output.read_text(encoding='utf-8'), relative=True).tables
+                        if table['caption'].startswith('Timings') and any('solver-a' in cell for row in table['rows'] for cell in row))
 
         def values(table, solver):
             row = next(row for row in table['rows'] if row[1].startswith(solver))
@@ -470,17 +547,18 @@ class Reports(unittest.TestCase):
         self.assertEqual(len([table for table in tables
                               if any('solver-c' in cell for row in table['rows'] for cell in row)]), 2)
 
-    def test_relative_best_can_be_on_another_platform(self):
+    def test_relative_best_is_local_to_each_platform(self):
         first = self.output('first', [add_trial(result(), [12] * 6)])
         second = self.output('second', [add_trial(result(), [10] * 6)],
                              host={**HOST, 'cpu': 'Faster CPU'})
         output = self.base / 'platforms.html'
         write_report([first, second], output)
-        table = next(table for table in Tables(output.read_text(encoding='utf-8')).tables
-                     if table['caption'].startswith('Relative'))
-        slow = next(row for row in table['rows'] if row[0].startswith('Test CPU'))
-        fast = next(row for row in table['rows'] if row[0].startswith('Faster CPU'))
-        self.assertEqual([float(value) for value in slow[-7:]], [1.2] * 7)
+        tables = [table for table in Tables(output.read_text(encoding='utf-8'), relative=True).tables
+                  if table['caption'].startswith('Timings')]
+        slow = next(row for table in tables for row in table['rows'] if row[0].startswith('Test CPU'))
+        fast = next(row for table in tables for row in table['rows'] if row[0].startswith('Faster CPU'))
+        self.assertEqual(len(tables), 2)
+        self.assertEqual([float(value) for value in slow[-7:]], [1] * 7)
         self.assertEqual([float(value) for value in fast[-7:]], [1] * 7)
 
     def test_zero_timings_missing_results_and_escaped_html(self):
@@ -495,8 +573,8 @@ class Reports(unittest.TestCase):
         self.assertIn('&lt;script&gt;', html)
         self.assertNotIn('<script>alert', html)
         self.assertIn('unsupported', html)
-        relative = next(table for table in Tables(html).tables
-                        if table['caption'].startswith('Relative'))
+        relative = next(table for table in Tables(html, relative=True).tables
+                        if table['caption'].startswith('Timings'))
         zero = next(row for row in relative['rows'] if row[1].startswith(malicious))
         positive = next(row for row in relative['rows'] if row[1].startswith('positive'))
         unavailable = next(row for row in relative['rows'] if row[1].startswith('unavailable'))

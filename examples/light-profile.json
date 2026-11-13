@@ -824,6 +824,18 @@
       "warmup_runs": 1,
       "measured_runs": 5,
       "case_timeout_seconds": 300
+    },
+    {
+      "id": "resources",
+      "instrumentation": {
+        "kind": "trace",
+        "collectors": [
+          "linux.phase_resources"
+        ]
+      },
+      "warmup_runs": 1,
+      "measured_runs": 1,
+      "case_timeout_seconds": 300
     }
   ]
 }
