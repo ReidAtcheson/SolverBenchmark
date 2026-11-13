@@ -148,15 +148,30 @@ unintended ongoing VM or disk charges.
 
 ### Estimate
 
-As of November 13, 2026, the estimated on-demand VM rates in `us-central1` are
-$0.776944/hour for n2-standard-16, $0.337968/hour for t2d-standard-8, and
-$0.3592/hour for c4a-standard-8, or **$1.474112/hour combined** while all three
-VMs are running. One hour each is about **$1.47**, and two hours each about
-**$2.95**, before boot disks, storage operations, egress and applicable taxes.
+**As of November 13, 2026, 14:30 UTC**, the successful light run in `us-central1`
+is estimated at **$0.09 in VM charges**, before disks, external IP addresses,
+storage operations, egress, and taxes. Using the Cloud Audit Logs interval from
+VM insert request to deletion completion as an approximation of VM lifetime:
+
+| Target | Approximate lifetime | On-demand rate | Estimated VM charge |
+| --- | ---: | ---: | ---: |
+| Intel `n2-standard-16` | 3 min 37 sec | $0.776944/hour | $0.047 |
+| AMD `t2d-standard-8` | 4 min 06 sec | $0.337968/hour | $0.023 |
+| Arm `c4a-standard-8` | 3 min 16 sec | $0.3592/hour | $0.020 |
+
+These intervals include provisioning, native builds, benchmarking, and deletion;
+they are not billed-duration records. The first attempt also started Intel and
+AMD VMs that failed during setup, adding approximately **$0.02** in VM charges.
+The whole session is therefore estimated at **$0.11 for VMs**, plus the other
+charges above. This is an estimate, not an invoice: actual billed time, rates,
+discounts, and additional charges can differ. Recompressing the downloaded report
+inputs produced approximately 139 KiB total; a future run is capped at 30 MiB
+plus failure logs.
+
+The three on-demand VMs together cost about **$1.47/hour** while all are running.
 The six-hour task limit is not a precise total VM-billing cap: startup, shutdown
-and other resources can add charges. Cloud duration includes package downloads,
-native builds and the benchmark, and varies by machine and run. Check current
-[Compute Engine pricing](https://cloud.google.com/compute/all-pricing),
+and other resources can add charges. Check current
+[Compute Engine pricing](https://cloud.google.com/products/compute/pricing/general-purpose),
 [Cloud Storage pricing](https://cloud.google.com/storage/pricing), and
 [network pricing](https://cloud.google.com/vpc/network-pricing) for your project
 and region before running.
