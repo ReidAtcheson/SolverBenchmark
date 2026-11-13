@@ -8,6 +8,24 @@ All inputs are generated locally from explicit parameters and seeds. No mesh
 files, object storage, matrix downloads, or additional Python dependencies are
 required.
 
+The [light profile](../examples/light-profile.json) includes these 24 cases and
+the three Laplacians, each with 9,261–10,648 equations and one manufactured
+right-hand side. It runs one warmup and five measured rounds in a single
+baseline timing pass for each of the Eigen and SuperLU workers. Each
+case/solver execution has a 300-second deadline covering all six rounds. A
+deployment must provide both workers, as in the comparison example. Validate
+or run it with:
+
+```sh
+solver-benchmark validate examples/light-profile.json
+solver-benchmark run examples/light-profile.json \
+  --deployment examples/comparison-deployment.json --output results/light
+```
+
+The comparison deployment is a template and its worker and library paths must
+be adjusted for the host. Generation happens before solver timing; the deadline
+is a limit, not a prediction of run time.
+
 ```sh
 solver-benchmark validate examples/generated-physics-profile.json
 solver-benchmark run examples/generated-physics-profile.json \

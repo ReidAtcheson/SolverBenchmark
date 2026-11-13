@@ -231,9 +231,16 @@ def collect_report(inputs, metric='wall'):
                 configuration_id = canonical_hash(configuration)
                 row_key = (platform_id, solver, configuration_id)
                 if row_key not in matrix['rows']:
+                    cloud = host.get('cloud')
+                    cloud = cloud if isinstance(cloud, dict) else {}
+                    cpu = host.get('cpu') or cloud.get('cpu_platform') or 'Unknown CPU'
+                    cpu_platform = cloud.get('cpu_platform')
+                    if cpu_platform == cpu:
+                        cpu_platform = None
+                    cloud_type = ' '.join(str(v) for v in
+                                          (cloud.get('provider'), cloud.get('machine_type')) if v)
                     label = ' / '.join(str(v) for v in (
-                        host.get('cpu') or 'Unknown CPU', host.get('machine'),
-                        process.get('host')) if v)
+                        cpu, cpu_platform, cloud_type, host.get('machine'), process.get('host')) if v)
                     matrix['rows'][row_key] = {
                         'platform': label, 'platform_id': platform_id, 'host': platform,
                         'solver': solver, 'configuration': configuration,
