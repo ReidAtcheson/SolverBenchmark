@@ -168,14 +168,20 @@ def _table(matrix, metric_name):
 
 
 def _resource_table(matrix):
-    columns = [('cpu_utilization', phase, label) for phase, label in COLUMNS]
+    columns = [(group, phase, label) for phase, label in COLUMNS
+               for group in ('cpu_utilization', 'system_cpu_seconds', 'system_cpu_percent')]
     columns += [('phase_rss_after_bytes', phase, label) for phase, label in COLUMNS[:-1]]
     columns += [('process_resources', 'cpu_utilization', 'Process CPU / wall'),
+                ('process_resources', 'system_cpu_seconds', 'Process system CPU seconds'),
+                ('process_resources', 'system_cpu_percent', 'Process system CPU % of total'),
                 ('process_resources', 'max_rss_bytes', 'Process peak RSS')]
     parts = ['<div class="table-scroll"><table><caption>Resource utilization</caption>',
              '<thead><tr><th>Platform</th><th>Solver / configuration</th><th>Accepted runs</th>']
     for group, key, label in columns:
-        prefix = 'CPU / wall: ' if group == 'cpu_utilization' else 'RSS after: ' if group == 'phase_rss_after_bytes' else ''
+        prefix = ('CPU / wall: ' if group == 'cpu_utilization' else
+                  'System CPU seconds: ' if group == 'system_cpu_seconds' else
+                  'System CPU % of total: ' if group == 'system_cpu_percent' else
+                  'RSS after: ' if group == 'phase_rss_after_bytes' else '')
         parts.append(f'<th scope="col">{prefix}{label}</th>')
     parts.append('</tr></thead><tbody>')
     for row in matrix['rows']:
@@ -183,6 +189,8 @@ def _resource_table(matrix):
         for group, key, _ in columns:
             value = row[group][key]
             label = '—' if value is None else f'{value / (1048576 if "rss" in group or key == "max_rss_bytes" else 1):.6g}'
+            if value is not None and (group == 'system_cpu_percent' or key == 'system_cpu_percent'):
+                label += '%'
             parts.append(f'<td class="timing">{label}</td>')
         parts.append('</tr>')
     parts.append('</tbody></table></div>')
@@ -234,7 +242,7 @@ def render_report(report, title='Solver benchmark report'):
         'configuration; achieved errors are shown alongside timings. Platform and solver '
         'configuration details identify the measurements being pooled. '
         f'Trace results excluded from timings: <strong>{_text(report["excluded_trace_results"])}</strong>.</p>',
-        '<p>CPU / wall is process CPU seconds divided by wall seconds for the same observation: 1 means one CPU core on average, and values above 1 mean more than one core. Each phase uses the eligible accepted baseline trial with the shortest positive wall time; critical path uses the same-trial sums of analysis, numeric and solve. Process CPU / wall uses the successful baseline process with accepted trials and shortest positive lifetime wall time. Process values include startup, warmup and work outside measured phases. RSS values are MiB. RSS after each phase is the minimum boundary snapshot from accepted trace trials, not a phase peak. Process peak RSS is the minimum lifetime peak across successful baseline processes with accepted trials. A dash means no eligible measurement.</p>',
+        '<p>CPU / wall is total process CPU seconds divided by wall seconds for the same observation: 1 means one CPU core on average, and values above 1 mean more than one core. System CPU is the kernel-mode portion, shown in seconds and as a percentage of total CPU time. Each phase uses the eligible accepted baseline trial with the shortest positive wall time; critical path uses the same-trial sums of analysis, numeric and solve. Process values use the successful baseline process with accepted trials and shortest positive lifetime wall time, including startup, warmup and work outside measured phases. Older results may lack phase system CPU time, and a zero total CPU time has no percentage. Values display six significant digits; limited clock precision and sampling offsets can produce percentages above 100% for short phases. RSS values are MiB. RSS after each phase is the minimum boundary snapshot from accepted trace trials, not a phase peak. Process peak RSS is the minimum lifetime peak across successful baseline processes with accepted trials. A dash means no eligible measurement.</p>',
         '</section>',
     ]
     if not matrices:

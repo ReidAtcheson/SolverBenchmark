@@ -120,6 +120,8 @@ class _Sequence:
                 raise ProtocolError("warm-up must not report timing samples")
         elif not isinstance(times, dict) or not all(_seconds(times.get(k)) for k in ("wall_seconds", "cpu_seconds")):
             raise ProtocolError("invalid measured timing")
+        elif "system_cpu_seconds" in times and not _seconds(times["system_cpu_seconds"]):
+            raise ProtocolError("invalid measured system CPU timing")
 
     def accept(self, message):
         kind = message.get("type")

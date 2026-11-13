@@ -24,6 +24,9 @@ library and records its hash. SuperLU's sparse factorization remains serial
 apart from work delegated to BLAS, so small operations may use only one core.
 Eigen SparseLU uses its own serial supernodal update kernel, not external BLAS;
 its numeric phase therefore does not gain BLAS parallelism from this build.
+OpenBLAS's idle worker threads can spin, so CPU / wall above one does not by
+itself establish useful parallel work or a speedup. Compare wall times as well;
+system CPU time describes kernel-mode work and does not count user-mode spins.
 
 ## Prerequisites
 

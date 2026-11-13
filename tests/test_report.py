@@ -188,8 +188,12 @@ class Reports(unittest.TestCase):
         row = collect_report([directory])['matrices'][0]['rows'][0]
         self.assertEqual(row['cpu_times']['analysis'], 6)
         self.assertEqual(row['phase_rss_after_bytes']['numeric'], 2097152)
-        self.assertEqual(row['process_resources'], {'cpu_seconds': 9, 'max_rss_bytes': 10485760, 'cpu_utilization': 3})
+        self.assertEqual(row['process_resources'], {'cpu_seconds': 9, 'max_rss_bytes': 10485760,
+                                                    'cpu_utilization': 3, 'system_cpu_seconds': 2,
+                                                    'system_cpu_percent': 100 * (2 / 9)})
         self.assertEqual(row['cpu_utilization']['analysis'], 2)
+        self.assertIsNone(row['system_cpu_seconds']['analysis'])
+        self.assertIsNone(row['system_cpu_percent']['analysis'])
         self.assertEqual(row['cpu_utilization']['critical_path'], 2)
         self.assertEqual(row['times']['analysis'], 3)
         output = self.base / 'resources.html'
@@ -210,6 +214,33 @@ class Reports(unittest.TestCase):
         self.assertEqual(row['cpu_times']['analysis'], 0.1)
         self.assertEqual(row['cpu_utilization']['analysis'], 3)
         self.assertEqual(row['cpu_utilization']['setup'], 2)
+
+    def test_system_cpu_uses_same_trial_as_total_and_older_results_remain_readable(self):
+        baseline = add_trial(result(), [2] * 6, index=0)
+        add_trial(baseline, [1] * 6, index=1)
+        for record in baseline['phases'] + baseline['teardowns']:
+            record['times']['system_cpu_seconds'] = 0.2 if record['trial']['index'] == 0 else 0.4
+        # The fastest analysis trial lacks the optional field. Never borrow a
+        # system value from another trial to pair with its wall time.
+        baseline['phases'][7]['times'].pop('system_cpu_seconds')
+        baseline['process'].update(user_cpu_seconds=2, system_cpu_seconds=1, wall_seconds=4)
+        directory = self.output('system-paired', [baseline])
+        row = collect_report([directory])['matrices'][0]['rows'][0]
+        self.assertEqual(row['cpu_utilization']['analysis'], 2)
+        self.assertIsNone(row['system_cpu_seconds']['analysis'])
+        self.assertEqual(row['system_cpu_seconds']['numeric'], 0.4)
+        self.assertEqual(row['system_cpu_percent']['numeric'], 20)
+        self.assertIsNone(row['system_cpu_seconds']['critical_path'])
+        self.assertEqual(row['process_resources']['system_cpu_seconds'], 1)
+        self.assertAlmostEqual(row['process_resources']['system_cpu_percent'], 100 / 3)
+        output = self.base / 'system-paired.html'
+        write_report([directory], output)
+        table = next(t for t in Tables(output.read_text()).tables if t['caption'] == 'Resource utilization')
+        headers = table['rows'][0]
+        self.assertEqual(table['rows'][1][headers.index('System CPU seconds: Numeric')], '0.4')
+        self.assertEqual(table['rows'][1][headers.index('System CPU % of total: Numeric')], '20%')
+        self.assertEqual(table['rows'][1][headers.index('System CPU seconds: Analysis')], '—')
+        self.assertEqual(table['rows'][1][headers.index('Process system CPU % of total')], '33.3333%')
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

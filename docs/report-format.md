@@ -44,7 +44,8 @@ matching source. Distinct tolerance settings remain distinct solver rows.
 | `cpu_times` | Independent minimum accepted baseline phase CPU seconds and minimum same-trial CPU critical path. |
 | `phase_rss_after_bytes` | Minimum RSS snapshot after each completed phase in accepted measured trace trials; boundary snapshots are not phase peaks. |
 | `cpu_utilization` | CPU seconds divided by wall seconds from the same accepted trial with the shortest positive wall time for each phase; critical path pairs same-trial sums. |
-| `process_resources` | Minimum lifetime CPU seconds and peak RSS bytes, and CPU / wall from the successful baseline process with accepted trials and shortest positive lifetime wall time. Includes startup and warmup. |
+| `system_cpu_seconds`, `system_cpu_percent` | Kernel-mode CPU seconds and its percentage of total CPU seconds for the same selected trial as `cpu_utilization`; critical path requires all three system CPU times. Missing system timings produce null, including for older results; a zero total CPU time has no percentage. |
+| `process_resources` | Minimum lifetime CPU seconds and peak RSS bytes, and CPU / wall, system CPU seconds and its percentage of total from the same successful baseline process with accepted trials and shortest positive lifetime wall time. Includes startup and warmup. |
 | `relative_times` | Dimensionless timing ratios against the row's entry in `platform_best_times`, with the same phase keys. |
 | `relative_median_times` | Median timing ratios against the row's entry in `platform_best_median_times`. |
 | `worst_componentwise_backward_error` | Maximum dimensionless error over all RHS columns and measured baseline trials across the row's sources, including rejected solutions. |
@@ -70,6 +71,8 @@ the median for each row, independently of the minimum-based baselines.
 
 Finite values are JSON numbers with their stored precision; HTML displays six
 significant digits. `null` means no eligible timing or no recorded error, not zero.
+System CPU times in short phases can be limited by operating system clock precision;
+independent sampling boundaries and rounding can yield percentages above 100%.
 Nonfinite diagnostics are JSON objects such as `{"nonfinite": "+inf"}`. This keeps
 the file valid for strict JSON parsers and preserves the distinction between
 missing measurements and infinite ratios/errors. A failed-verification diagnostic
