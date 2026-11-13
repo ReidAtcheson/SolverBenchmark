@@ -109,7 +109,7 @@ prerequisites, usage, transfer limits, and billing considerations.
 
 Collect any number of benchmark output directories into matching reports: a
 self-contained HTML file for people and a structured JSON summary for agents and
-scripts. No web server, JavaScript, or external assets are needed to view the HTML:
+scripts. No web server or external assets are needed to view the HTML; switching timing views requires JavaScript:
 
 ```sh
 solver-benchmark report results/local-001 results/local-002 \
@@ -133,10 +133,13 @@ workers and the original input arrays are not needed. `--title` customizes the
 heading, and `--metric cpu` selects CPU seconds instead of the default wall
 seconds. Repeating the same input path does not count it twice.
 
-Each matrix comparison has an **absolute timing table** (seconds) and a
-**relative timing table**, with one row per platform/solver configuration and
+Each matrix comparison has a timing table for each recorded platform, with buttons to switch between
+**absolute timings** (seconds) and **relative timings**, and between minimum and median, with one row per solver configuration and
 columns for setup, pre-analysis, analysis, numeric, solve, teardown, and critical
-path. Relative timings divide by the best timing in that column across all rows:
+path. Equivalent recorded platforms share a table across VM hostnames and cloud zones;
+host provenance remains in each row. Median timings use all eligible pooled trials; for an even number of values,
+the median averages the middle two. Relative timings divide by the best timing in
+that column on the same platform for the chosen statistic:
 the fastest is **1**, and **1.2** means 20% slower. Tied best values are highlighted.
 Missing values appear as a dash and do not enter the baseline; when the best
 timing is zero, zero ties are 1 and positive timings have an infinite ratio.
@@ -144,14 +147,23 @@ timing is zero, zero ties are 1 and positive timings have an infinite ratio.
 Each solver row also shows its **worst componentwise backward error**: the maximum
 over all RHS columns and measured baseline repetitions across its source outputs,
 including rejected solutions. Warmups and trace passes are excluded. This
-dimensionless error stays absolute in both tables. A dash means no error was
+dimensionless error stays absolute in both views. A dash means no error was
 recorded; infinity preserves infinite errors or failed-verification diagnostics.
+
+The resource table shows CPU / wall ratios and RSS snapshots after each phase, plus
+worker lifetime CPU / wall and peak RSS. CPU / wall is the average number of CPU
+cores used, and may exceed 1. Each phase ratio pairs CPU and wall measurements
+from the accepted trial with the shortest positive wall time; the process ratio
+uses the successful process with the shortest positive lifetime wall time. Phase RSS comes from accepted trace trials with
+`linux.phase_resources`; it is a boundary snapshot, not a phase peak. The light
+profile includes a separate resource pass. Process measurements include startup
+and warmup. Resource reductions and units are documented in the report.
 
 Only accuracy-accepted **measured** trials from baseline passes contribute timings.
 Warm-ups and instrumentation passes are excluded. Every phase independently uses
-its **fastest** eligible repetition across matching outputs. The critical path
-is the minimum of **analysis + numeric + solve within a single repetition**,
-not the sum of independently selected phase minima. It excludes setup,
+its **fastest** eligible repetition or the median across matching outputs. The critical path
+is the minimum or median of **analysis + numeric + solve within a single repetition**,
+not the sum of independently reduced phase values. It excludes setup,
 pre-analysis, teardown, IPC, and parent validation. Accepted measured trials
 remain eligible even if another trial fails; all execution outcomes are visible
 in the report, and unsuccessful solvers remain present with missing timings.

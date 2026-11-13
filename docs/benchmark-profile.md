@@ -205,7 +205,7 @@ The separate deployment document has `schema_version: "1.0"` and a `solvers` obj
 mapping every requested solver ID to `executable`, `arguments`, and `environment`.
 Executable paths resolve relative to the deployment file; environment is a string
 to string object. The parent inherits its environment, applies these overrides,
-and sets OMP/OpenBLAS/MKL/BLIS thread-count variables from `thread_limit` before launch.
+and sets OMP/OpenBLAS/MKL/BLIS thread-count variables from `thread_limit` before launch. A positive integer sets a fixed limit; `"available_cores"` resolves once per run to the number of physical cores represented in the parent process CPU affinity mask. If topology is unavailable, the runner uses the number of visible logical CPUs. The profile retains the symbolic value, while each result and worker request record the resolved integer. The limit permits parallelism; it does not make a serial solver parallel.
 The adapter still must honor the requested compute-thread limit.
 
 The execution record captures a run UUID, UTC start time, deployment mapping,

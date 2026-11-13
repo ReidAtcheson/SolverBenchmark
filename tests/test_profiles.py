@@ -3,13 +3,27 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from solver_benchmark.profiles import canonical_hash, load_json, validate_profile, input_hash
+from solver_benchmark.profiles import canonical_hash, load_json, validate_profile, input_hash, available_physical_cores
 from solver_benchmark.problems import generate_case
 
 ROOT=Path(__file__).resolve().parents[1]
 
 class Profiles(unittest.TestCase):
+    def test_available_cores_respects_affinity_and_sibling_threads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for cpu, core in ((0, 0), (1, 0), (2, 1), (3, 2)):
+                topology = root / f'cpu{cpu}' / 'topology'
+                topology.mkdir(parents=True)
+                (topology / 'physical_package_id').write_text('0')
+                (topology / 'core_id').write_text(str(core))
+            with patch('os.sched_getaffinity', return_value={0, 1, 2}):
+                self.assertEqual(available_physical_cores(root), 2)
+            with patch('os.sched_getaffinity', return_value={0, 1, 8}):
+                self.assertEqual(available_physical_cores(root), 3)
+
     def setUp(self):
         self.profile=json.loads((ROOT/'examples/benchmark-profile.json').read_text())
     def test_schema_copy_matches(self):

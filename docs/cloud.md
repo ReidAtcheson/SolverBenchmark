@@ -72,7 +72,7 @@ specified by the repository, then runs all configured cases/solvers. Build and
 setup time is billed. Jobs use standard, non-Spot VMs; there are no automatic
 retries and no long-lived container registry or images. The boot disks are deleted
 with the VMs. CPU time and memory limits are per task; the light benchmark itself
-uses the solver thread limits in the benchmark profile.
+uses a thread limit equal to the available physical cores for each solver (falling back to visible logical CPUs if topology is unavailable). The solver and linked libraries may use fewer threads.
 
 Only `results.jsonl`, `execution.json`, `profile.json`, and
 `version-manifest.json` are returned for each machine. Matrices and worker traces
