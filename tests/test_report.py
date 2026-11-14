@@ -375,6 +375,43 @@ class Reports(unittest.TestCase):
             ''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
         return directory
 
+    def test_incomplete_profile_coverage_is_visible_in_html_and_json(self):
+        baseline = add_trial(result(), [1] * 6)
+        trace = add_trial(result(), [1] * 6)
+        trace['pass_id'] = 'resources'
+        trace['instrumentation'] = {'kind': 'trace', 'collectors': ['linux.phase_resources']}
+        directory = self.output('partial', [baseline, trace])
+        profile_path = directory / 'profile.json'
+        profile = json.loads(profile_path.read_text())
+        profile['solvers'].append({'id': 'missing<solver>', 'options': dict(OPTIONS)})
+        profile['passes'].append({'id': 'resources', 'instrumentation': trace['instrumentation'],
+                                  'warmup_runs': 0, 'measured_runs': 1, 'case_timeout_seconds': 30})
+        profile_path.write_text(json.dumps(profile))
+        output = self.base / 'partial-report.html'
+        write_report([directory], output)
+        coverage = self.read_report_json(output.with_suffix('.json'))['sources'][0]['execution_coverage']
+        self.assertEqual((coverage['recorded_count'], coverage['expected_count']), (2, 4))
+        self.assertEqual(coverage['missing'], [
+            {'case_id': 'matrix', 'solver_id': 'missing<solver>', 'pass_id': 'timing'},
+            {'case_id': 'matrix', 'solver_id': 'missing<solver>', 'pass_id': 'resources'},
+        ])
+        html = output.read_text()
+        self.assertIn('Incomplete benchmark outputs', html)
+        self.assertIn('2 of 4 executions recorded', html)
+        self.assertIn('missing&lt;solver&gt; / resources', html)
+
+    def test_coverage_is_unknown_for_legacy_records_without_pass_ids(self):
+        row = add_trial(result(), [1] * 6)
+        row.pop('pass_id')
+        directory = self.output('legacy-pass', [row])
+        self.assertIsNone(collect_report([directory])['sources'][0]['execution_coverage'])
+
+    def test_failure_is_recorded_and_duplicate_rows_do_not_inflate_coverage(self):
+        failure = result(outcome='worker_crashed')
+        directory = self.output('failure-coverage', [failure, failure])
+        coverage = collect_report([directory])['sources'][0]['execution_coverage']
+        self.assertEqual(coverage, {'expected_count': 1, 'recorded_count': 1, 'missing': []})
+
     def test_fastest_phases_and_same_trial_critical_path(self):
         row = result(outcome='accuracy_failed')
         add_trial(row, [8, 7, 1, 8, 5, 3])

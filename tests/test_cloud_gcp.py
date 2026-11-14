@@ -71,6 +71,46 @@ class CloudGcpTests(unittest.TestCase):
         script = job['taskGroups'][0]['taskSpec']['runnables'][0]['script']['text']
         self.assertIn('export SINGLE_CORE=1\n', script)
 
+    def test_profile_resource_overrides_and_defaults(self):
+        profile = cloud.load_profile(ROOT / 'cloud/profiles/light.json')
+        for overrides, expected_disk, expected_entries in (({}, 30, 5_000_000),
+                                                            ({'boot_disk_gb': 200, 'max_entries': 80_000_000}, 200, 80_000_000)):
+            with self.subTest(overrides=overrides), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / 'profile.json'
+                path.write_text(json.dumps({**profile, **overrides}))
+                loaded = cloud.load_profile(path)
+                for single_core in (False, True):
+                    job = cloud.job_config(loaded['targets'][0], loaded, 'test-bucket',
+                                           'a@b.example', 'us-central1-c', single_core=single_core)
+                    self.assertEqual(job['allocationPolicy']['instances'][0]['policy']['bootDisk']['sizeGb'], expected_disk)
+                    script = job['taskGroups'][0]['taskSpec']['runnables'][0]['script']['text']
+                    self.assertIn(f'export MAX_ENTRIES={expected_entries}\n', script)
+                    self.assertEqual(script.count('--max-entries "$MAX_ENTRIES"'), 2)
+
+    def test_heavy_profile_job_resources(self):
+        profile = cloud.load_profile(ROOT / 'cloud/profiles/heavy.json')
+        light = cloud.load_profile(ROOT / 'cloud/profiles/light.json')
+        self.assertEqual(next(t for t in profile['targets'] if t['id'] == 'arm'),
+                         next(t for t in light['targets'] if t['id'] == 'arm'))
+        for target in profile['targets']:
+            with self.subTest(target=target['id']):
+                job = cloud.job_config(target, profile, 'test-bucket', 'a@b.example', 'us-central1-c')
+                self.assertEqual(job['allocationPolicy']['instances'][0]['policy']['bootDisk']['sizeGb'], 100)
+                task = job['taskGroups'][0]['taskSpec']
+                self.assertEqual(task['maxRunDuration'], '7200s')
+                self.assertIn('export MAX_ENTRIES=10000000\n', task['runnables'][0]['script']['text'])
+
+    def test_profile_rejects_invalid_resource_overrides(self):
+        profile = cloud.load_profile(ROOT / 'cloud/profiles/light.json')
+        for field, values in (('boot_disk_gb', (True, 0, 9, 65537, 1.5)),
+                              ('max_entries', (True, 0, -1, 1 << 63, 1.5))):
+            for value in values:
+                with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / 'profile.json'
+                    path.write_text(json.dumps({**profile, field: value}))
+                    with self.assertRaisesRegex(ValueError, 'invalid ' + field):
+                        cloud.load_profile(path)
+
     @unittest.skipUnless(hasattr(os, 'sched_getaffinity'), 'requires Linux CPU affinity')
     def test_single_core_profile_and_inherited_affinity(self):
         with tempfile.TemporaryDirectory() as tmp:

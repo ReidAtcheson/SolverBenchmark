@@ -221,6 +221,25 @@ def render_report(report, title='Solver benchmark report'):
         f'<span class="stat"><strong>{len(matrices)}</strong> matrix comparisons</span>',
         f'<span class="stat">Metric: <strong>{metric_name}</strong></span>',
         '</div></header>',
+    ]
+    incomplete = [source for source in sources
+                  if source.get('execution_coverage') and source['execution_coverage']['missing']]
+    if incomplete:
+        parts.append('<section class="method" aria-label="Incomplete benchmark outputs">'
+                     '<h2>Incomplete benchmark outputs</h2>'
+                     '<p>Some requested case, solver and pass combinations have no result record. '
+                     'Their absence does not establish a solver outcome.</p><ul>')
+        for source in incomplete:
+            coverage = source['execution_coverage']
+            parts.append(f'<li><a href="#source-{source["id"]}">Source {_text(source["id"])}</a>: '
+                         f'{coverage["recorded_count"]} of {coverage["expected_count"]} executions recorded'
+                         '<ul>')
+            for missing in coverage['missing']:
+                parts.append(f'<li>{_text(missing["case_id"])} / {_text(missing["solver_id"])} / '
+                             f'{_text(missing["pass_id"])}</li>')
+            parts.append('</ul></li>')
+        parts.append('</ul></section>')
+    parts.extend([
         '<section class="method" aria-labelledby="method-title">',
         '<h2 id="method-title">How to read this report</h2>',
         '<p>Only accepted measured trials from baseline passes contribute timings. '
@@ -260,7 +279,7 @@ def render_report(report, title='Solver benchmark report'):
         f'Trace results excluded from timings: <strong>{_text(report["excluded_trace_results"])}</strong>.</p>',
         '<p>CPU / wall is total process CPU seconds divided by wall seconds for the same observation: 1 means one CPU core on average, and values above 1 mean more than one core. System CPU is the kernel-mode portion, shown in seconds and as a percentage of total CPU time. Each phase uses the eligible accepted baseline trial with the shortest positive wall time; critical path uses the same-trial sums of analysis, numeric and solve. Process values use the successful baseline process with accepted trials and shortest positive lifetime wall time, including startup, warmup and work outside measured phases. Older results may lack phase system CPU time, and a zero total CPU time has no percentage. Values display six significant digits; limited clock precision and sampling offsets can produce percentages above 100% for short phases. RSS values are MiB. RSS after each phase is the minimum boundary snapshot from accepted trace trials, not a phase peak. Process peak RSS is the minimum lifetime peak across successful baseline processes with accepted trials. A dash means no eligible measurement.</p>',
         '</section>',
-    ]
+    ])
     if not matrices:
         parts.append('<section class="matrix"><h2>No baseline results</h2>'
                      '<p>The supplied outputs contain no baseline result rows to compare.</p></section>')

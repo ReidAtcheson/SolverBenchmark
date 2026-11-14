@@ -1,0 +1,249 @@
+{
+  "schema_version": "1.0",
+  "name": "heavy",
+  "cases": [
+    {
+      "id": "laplacian-1d",
+      "generator": {
+        "id": "laplacian_1d",
+        "parameters": {
+          "mx": 200000,
+          "dx": 0.01
+        },
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_constant_columns",
+          "parameters": {
+            "first_value": 1,
+            "column_increment": 1
+          },
+          "seed": "0"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "laplacian-2d",
+      "generator": {
+        "id": "laplacian_2d",
+        "parameters": {
+          "mx": 400,
+          "my": 500,
+          "dx": 0.05,
+          "dy": 0.08
+        },
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_constant_columns",
+          "parameters": {
+            "first_value": 1,
+            "column_increment": 1
+          },
+          "seed": "0"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "laplacian-3d",
+      "generator": {
+        "id": "laplacian_3d",
+        "parameters": {
+          "mx": 50,
+          "my": 50,
+          "mz": 80,
+          "dx": 0.1,
+          "dy": 0.15,
+          "dz": 0.2
+        },
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_constant_columns",
+          "parameters": {
+            "first_value": 1,
+            "column_increment": 1
+          },
+          "seed": "0"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "advection",
+      "generator": {
+        "id": "convection_diffusion_2d",
+        "parameters": {
+          "nx": 400,
+          "ny": 500,
+          "diffusion": 0.05,
+          "velocity_x": 2,
+          "velocity_y": 1
+        },
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "wave",
+      "generator": {
+        "id": "helmholtz_2d",
+        "parameters": {
+          "nx": 400,
+          "ny": 500,
+          "wavenumber": 20
+        },
+        "seed": "0"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "transport-3d",
+      "generator": {
+        "id": "convection_diffusion_3d",
+        "parameters": {
+          "nx": 50,
+          "ny": 50,
+          "nz": 80,
+          "diffusion": 0.01,
+          "velocity_x": 1,
+          "velocity_y": -0.5,
+          "velocity_z": 0.25
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    },
+    {
+      "id": "wave-3d-indefinite",
+      "generator": {
+        "id": "helmholtz_3d",
+        "parameters": {
+          "nx": 50,
+          "ny": 50,
+          "nz": 80,
+          "wavenumber": 12
+        },
+        "seed": "42"
+      },
+      "rhs": {
+        "generator": {
+          "id": "manufactured_seeded_columns",
+          "parameters": {
+            "offset": 0,
+            "amplitude": 1
+          },
+          "seed": "123"
+        },
+        "count": 1
+      },
+      "data_format": "csr-f64-i32-i64-le",
+      "encoding": {
+        "kind": "real"
+      }
+    }
+  ],
+  "solvers": [
+    {
+      "id": "eigen-sparse-lu",
+      "options": {
+        "thread_limit": "available_cores",
+        "relative_tolerance": 1e-10,
+        "absolute_tolerance": 1e-12,
+        "iteration_limit": "10000"
+      }
+    },
+    {
+      "id": "superlu",
+      "options": {
+        "thread_limit": "available_cores",
+        "relative_tolerance": 1e-10,
+        "absolute_tolerance": 1e-12,
+        "iteration_limit": "10000"
+      }
+    }
+  ],
+  "passes": [
+    {
+      "id": "timing",
+      "instrumentation": {
+        "kind": "baseline",
+        "collectors": []
+      },
+      "warmup_runs": 1,
+      "measured_runs": 1,
+      "case_timeout_seconds": 1800
+    },
+    {
+      "id": "resources",
+      "instrumentation": {
+        "kind": "trace",
+        "collectors": [
+          "linux.phase_resources"
+        ]
+      },
+      "warmup_runs": 0,
+      "measured_runs": 1,
+      "case_timeout_seconds": 1800
+    }
+  ]
+}

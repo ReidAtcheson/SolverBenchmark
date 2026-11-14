@@ -1,6 +1,8 @@
 #!/bin/bash
 # Runs on the Batch VM; source and results are the only Cloud Storage objects.
 set -euo pipefail
+# Budget setup time against the Batch deadline, leaving a window for uploads.
+SECONDS=0
 export DEBIAN_FRONTEND=noninteractive
 # Batch script environments may not export PATH even when the shell can find
 # commands. CMake and its child processes need it to locate their own resources.
@@ -69,14 +71,28 @@ set +e
 if [[ "$SINGLE_CORE" == 1 ]]; then
   # Derive the actual recorded profile on the VM from the packaged source
   # profile, and restrict the benchmark and all its children to one CPU.
-  SB_SINGLE_CORE_AFFINITY_PATH=/tmp/sb-single-core-affinity.json \
-    /tmp/sb-venv/bin/python cloud/single_core.py "$BENCHMARK_PROFILE" /tmp/sb-single-core-profile.json \
-    /tmp/sb-venv/bin/solver-benchmark run /tmp/sb-single-core-profile.json \
-    --deployment cloud-deployment.json --output /tmp/sb-result
+  export SB_SINGLE_CORE_AFFINITY_PATH=/tmp/sb-single-core-affinity.json
+  command=(/tmp/sb-venv/bin/python cloud/single_core.py "$BENCHMARK_PROFILE" /tmp/sb-single-core-profile.json
+    /tmp/sb-venv/bin/solver-benchmark run /tmp/sb-single-core-profile.json
+    --deployment cloud-deployment.json --output /tmp/sb-result --max-entries "$MAX_ENTRIES")
 else
-  /tmp/sb-venv/bin/solver-benchmark run "$BENCHMARK_PROFILE" --deployment cloud-deployment.json --output /tmp/sb-result
+  command=(/tmp/sb-venv/bin/solver-benchmark run "$BENCHMARK_PROFILE" --deployment cloud-deployment.json --output /tmp/sb-result --max-entries "$MAX_ENTRIES")
 fi
-status=$?
+if (( UPLOAD_GRACE_SECONDS > 0 )); then
+  remaining=$(( MAX_RUN_SECONDS - UPLOAD_GRACE_SECONDS - SECONDS ))
+  if (( remaining > 0 )); then
+    # The Python supervisor handles SIGINT by reaping its isolated worker.
+    # GNU timeout reports 124 for this intentional interruption.
+    timeout --signal=INT --kill-after=20s "${remaining}s" "${command[@]}"
+    status=$?
+  else
+    echo 'Setup exhausted the benchmark budget; reserving time for diagnostics.' >&2
+    status=124
+  fi
+else
+  "${command[@]}"
+  status=$?
+fi
 set -e
 # Record the actual VM identity in the portable execution metadata. Even if
 # metadata lookup fails, transfer any completed results and report the error.

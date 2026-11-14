@@ -28,6 +28,67 @@ OpenBLAS's idle worker threads can spin, so CPU / wall above one does not by
 itself establish useful parallel work or a speedup. Compare wall times as well;
 system CPU time describes kernel-mode work and does not count user-mode spins.
 
+## Heavy profile
+
+`cloud/profiles/heavy.json` selects `examples/heavy-profile.json`: seven
+representative Laplacian, transport and wave cases in one, two and three
+dimensions, each with exactly 200,000 rows and columns. It uses the same two
+solvers and timing/resource passes as light, but uses one timing warm-up and one
+measured run, followed by one traced run without a warm-up. It does not include
+every case in the light catalog. Each solver/pass has a 30-minute deadline, and
+each Batch task has a two-hour deadline, including setup and input generation.
+The 28 individual pass deadlines total 14 hours, so the two-hour limit can end
+the task before all cases and passes finish. The worker aims to stop the
+benchmark two minutes before the task deadline and upload completed results.
+This upload is best effort: if setup or input generation overruns, no results
+exist yet; interruption, upload delays or the hard deadline may also prevent
+recovery of earlier results. In particular, sparse direct factorization of
+200,000-row 3D problems can exhaust memory or time on these machines; check
+every solver outcome and missing measurement in the report.
+
+| Target | Machine | vCPUs | Memory |
+| --- | --- | ---: | ---: |
+| intel | n2-highmem-32, minimum Intel Ice Lake | 32 | 256 GiB |
+| amd | n2d-highmem-32 | 32 | 256 GiB |
+| arm | c4a-standard-8 | 8 | 32 GiB |
+
+Intel and AMD use simultaneous multithreading; Arm has one vCPU per core, so
+the machines do not have the same physical core count. Arm uses the same smaller
+machine as the light profile and has considerably less memory, which may prevent
+some heavy cases from completing. Each target uses a 100 GB boot disk; the Intel
+and AMD tasks reserve 250,000 MiB and Arm reserves 28,000 MiB. The profile raises
+the per-case generation limit to 10 million entries. Inputs are all generated before the
+first solve and remain on the VM; do not use a laptop as a prerequisite for
+running this profile. Verify machine availability and quota in the selected zone.
+The heavy Intel and AMD machines can cost substantially more per hour than light;
+check current prices and budget for up to two hours per machine, plus provisioning,
+disks, network and other charges. The deadline is not a strict billing cap.
+
+After completing the prerequisites below, use a new output directory and save
+the launcher's output so the exact job prefix and bucket are available for
+cleanup. `--dry-run` creates no cloud resources.
+
+```sh
+python3 cloud/run_gcp.py --profile cloud/profiles/heavy.json \
+  --project YOUR_PROJECT_ID --service-account YOUR_VM_ACCOUNT@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+  --output results/cloud-heavy-001 --dry-run
+
+set -o pipefail
+python3 cloud/run_gcp.py --profile cloud/profiles/heavy.json \
+  --project YOUR_PROJECT_ID --service-account YOUR_VM_ACCOUNT@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+  --output results/cloud-heavy-001 2>&1 | tee cloud-heavy-001.log
+
+solver-benchmark report results/cloud-heavy-001/intel results/cloud-heavy-001/amd \
+  results/cloud-heavy-001/arm --output reports/cloud-heavy-001.html
+```
+
+The report command also writes `reports/cloud-heavy-001.json`. If a target
+fails, report the available target directories and use the single-target retry
+below with `cloud/profiles/heavy.json` and a new output directory. Inspect input
+hashes before comparing results across architectures. After every run, verify
+deletion of the jobs, VMs, boot disks and scratch bucket as described under
+Cleanup and billing.
+
 ## Prerequisites
 
 - A billed GCP project, `gcloud` installed and authenticated, and the Batch,
@@ -67,7 +128,7 @@ without creating cloud resources. `--region` and `--zone` may be changed togethe
 but check that all listed machine types and CPU platforms are available there.
 The output directory must not exist. The runner submits three jobs in parallel,
 collects each result when its job finishes, and returns nonzero on failure or
-missing results. The profile limits each task to six hours. The launcher cancels
+missing results. The light profile limits each task to six hours. The launcher cancels
 any job that has not reached `RUNNING` within an hour of submission and continues
 waiting for the other jobs. A timeout can stop the worker before it uploads results;
 already collected results remain available locally if the launcher is interrupted.
@@ -152,7 +213,8 @@ solver-benchmark report results/cloud-light-001/intel results/cloud-light-001/am
 ```
 
 Check availability before choosing the alternate zone. The same technique works
-for another target by changing the target ID and output path.
+for another target or the heavy profile by changing the profile path, target ID
+and output path.
 
 ## Cleanup and billing
 
@@ -182,6 +244,18 @@ archive; cloud results can differ, so the cap, not that observation, is the limi
 Billing depends on actual machine duration, region, applicable networking, storage
 and pricing. Inspect the project after a failed or interrupted run to avoid
 unintended ongoing VM or disk charges.
+
+For either profile, use the printed job prefix and bucket name to verify this
+run after the launcher exits. Check each target's Batch job with `gcloud batch
+jobs describe JOB_PREFIX-TARGET --project YOUR_PROJECT_ID --location REGION`,
+and inspect `gcloud compute instances list --project YOUR_PROJECT_ID` and
+`gcloud compute disks list --project YOUR_PROJECT_ID` for the run's Batch VMs
+and boot disks. Check the bucket with `gcloud storage buckets describe
+gs://BUCKET --project YOUR_PROJECT_ID`. A not-found response confirms absence;
+an access or API error does not. Job and VM deletion can take time, so repeat
+the checks until they disappear. If resources remain, confirm their identity and
+ownership before deleting them; do not delete unrelated project resources. A
+retained recovery bucket should be removed after downloading needed artifacts.
 
 ### Estimate
 
