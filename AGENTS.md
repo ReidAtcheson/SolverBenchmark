@@ -7,6 +7,12 @@ light”), use `cloud/profiles/light.json` and follow [the cloud run guide](docs
 This request authorizes the billed benchmark run; follow any user-specified
 project, hardware, budget, or other constraints.
 
+Prefer `cloud/orchestrate_gcp.py` from the cloud run guide as the single entry
+point. It records attempts, can retry a confirmed capacity shortage in a
+specified alternate zone, generates the report, and verifies cleanup. Inspect
+its summary and attempt logs; an incomplete or unverified run still needs
+follow-up. Sandbox approval and GCP access remain subject to their policies.
+
 1. Resolve the GCP project from the user's request or the active `gcloud`
    configuration. Find an existing VM service account that can run Batch jobs
    and that the caller can use; prefer the least-privileged suitable account.

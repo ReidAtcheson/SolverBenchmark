@@ -89,6 +89,73 @@ hashes before comparing results across architectures. After every run, verify
 deletion of the jobs, VMs, boot disks and scratch bucket as described under
 Cleanup and billing.
 
+## Automated launcher
+
+`cloud/orchestrate_gcp.py` combines the launch, bounded capacity retry, report,
+and cleanup verification into one local command. Set up the prerequisites below
+first. It uses the active `gcloud` project unless `--project` is supplied, and
+requires an existing VM service account through `--service-account` or the
+`SB_GCP_SERVICE_ACCOUNT` environment variable. It does not create project IAM
+grants or choose an account by assuming that a broad account is suitable.
+
+```sh
+export SB_GCP_SERVICE_ACCOUNT=YOUR_VM_ACCOUNT@YOUR_PROJECT_ID.iam.gserviceaccount.com
+python3 cloud/orchestrate_gcp.py --profile cloud/profiles/light.json \
+  --region us-central1 --zones us-central1-c us-central1-f \
+  --output results/cloud-auto-001 --dry-run
+python3 cloud/orchestrate_gcp.py --profile cloud/profiles/light.json \
+  --region us-central1 --zones us-central1-c us-central1-f \
+  --output results/cloud-auto-001
+```
+
+Use the Python environment in which this project is installed. The output path
+must be new. Each invocation records its source and attempt metadata, logs,
+target results, and a `summary.json`; if results were returned, it attempts to
+write `report.html` and `report.json` there. The report exposes missing
+executions and input hashes. The summary lists solvers observed in result
+records and any deployment-listed solvers omitted by the profile; absent or
+unreadable deployment metadata leaves that comparison unknown. A listed
+deployment does not itself prove a solver ran successfully. Inspect the summary
+and report even when the command exits nonzero: partial results can still be useful.
+
+Provide one zone or a primary and one alternate zone in the same region. The
+launcher waits up to five minutes for each job to start by default; change that
+with `--queue-timeout-seconds`. After the first attempt finishes, it retries an
+individual target at most once in the alternate zone, and only when it can
+establish a capacity shortage, prove that the original never ran and has
+stopped, and verify the original attempt's cleanup. It does not retry solver,
+permission, quota, unknown-state, or timed-out running jobs. An alternate zone
+is not guaranteed to have capacity. Retries, provisioning, bounded cleanup and
+verification extend total elapsed time and may add charges beyond a single task's
+deadline. If cloud API calls time out repeatedly, the launcher allows time for
+its per-resource cleanup retries before a watchdog can force it to stop; this
+can extend the command by hours beyond the task limit.
+
+The launcher checks for untracked source that the worker archive would omit and
+records the tracked working-tree state. It packages one source snapshot and
+checks its hash before each attempt. Commit the source for reproducibility and
+leave the snapshot unchanged during the run. On completion it polls for deletion
+of the run's Batch jobs, managed instance groups, VMs, boot disks, and bucket.
+If it cannot verify cleanup, it reports the resource names and returns nonzero.
+It never deletes a resource based only on its name. Boot-disk verification relies on
+Batch's generated resource names and on disks observed on this run's VMs; it
+cannot identify unrelated disks created outside the run. As with the underlying
+launcher, a hard kill or lost credentials can still require manual recovery.
+
+Running this single command under an agent may consolidate sandbox approval for
+its child `gcloud` commands. Whether an approval can be saved is controlled by
+the execution environment; it is separate from GCP IAM, and an approved,
+workspace-editable script is not itself a security boundary.
+
+For a future GitHub integration, use trusted workflow inputs and short-lived
+credentials through [Workload Identity Federation](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines),
+then publish the report as an artifact. Keep untrusted pull-request code away
+from privileged cloud and publishing credentials; see GitHub's
+[security guidance](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
+GitHub-hosted jobs have a [six-hour execution limit](https://docs.github.com/en/actions/reference/limits),
+so long runs and cancellation also need an independent recovery or cleanup path.
+No GitHub-triggered workflow is configured by this launcher.
+
 ## Prerequisites
 
 - A billed GCP project, `gcloud` installed and authenticated, and the Batch,
@@ -99,6 +166,10 @@ Cleanup and billing.
   and act as the VM service account. For example, use suitable scoped grants for
   Batch job editor, Storage admin, and Service Account User. The project must
   permit Batch's service agent to create its Compute resources.
+- For the automated launcher, the caller also needs read access to Compute
+  instances, disks, managed instance groups, and operations to detect capacity
+  failures and verify cleanup. A suitable scoped Compute Viewer grant is one
+  option. Missing read access is reported as unverified cleanup, not success.
 - An existing VM service account to pass with `--service-account`. That
   service account needs `roles/batch.agentReporter` on the project before the run.
   The runner grants it `roles/storage.objectUser` on the temporary bucket only;
@@ -221,14 +292,16 @@ and output path.
 The launcher requests deletion of its Batch jobs and normally recursively deletes
 its unique scratch bucket on success, failure, Ctrl-C and SIGTERM. If a result
 or log cannot be collected or its existence cannot be determined, the launcher
-retains the bucket for recovery and prints commands to inspect, download, and
-delete its contents. `cloud-run.json` records the bucket name and whether it was
+retains the bucket for recovery and prints commands to inspect and download its
+contents after confirming ownership. `cloud-run.json` records the bucket name and whether it was
 retained. Soft delete is disabled and an age-one-day lifecycle rule removes
 orphaned objects; this rule does not delete the empty bucket.
 
 Jobs and buckets receive an ownership label at creation, so the launcher can
-reconcile an interrupted create without deleting a resource owned by someone
-else. Batch job deletion is asynchronous. Hard kills, network/API failures or
+reconcile an interrupted create. It checks bucket ownership again immediately
+before recursive deletion and skips deletion if ownership is different or
+unknown. This check and the deletion are separate operations, so a replacement
+between them can still race with cleanup. Batch job deletion is asynchronous. Hard kills, network/API failures or
 unverifiable create requests can still leave resources behind: use the printed
 job prefix and bucket name to inspect and, if needed, delete them manually. The
 launcher reports cleanup failures and returns nonzero. There is no guarantee of

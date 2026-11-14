@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import argparse
+import hashlib
 import itertools
 import os
 import subprocess
@@ -22,6 +23,14 @@ spec.loader.exec_module(cloud)
 
 
 class CloudGcpTests(unittest.TestCase):
+    def test_cloud_subprocess_timeout_is_bounded_and_redacted(self):
+        with mock.patch.object(cloud.subprocess, 'run',
+                side_effect=subprocess.TimeoutExpired(['secret-token'], 120)) as run:
+            with self.assertRaisesRegex(OSError, 'cloud subprocess timed out after 120 seconds') as error:
+                cloud.call('secret-token', capture=True)
+            self.assertNotIn('secret-token', str(error.exception))
+            self.assertEqual(run.call_args.kwargs['timeout'], 120)
+
     def test_worker_manifest_records_and_verifies_loaded_openblas(self):
         # Exercise the worker's manifest generation without needing a VM or a
         # full SuperLU build. A different loaded backend must fail closed.
@@ -194,27 +203,127 @@ class CloudGcpTests(unittest.TestCase):
             self.assertNotIn('.git/config', names)
             self.assertFalse(any(name.startswith(('build/', '.venv/')) for name in names))
 
-    def run_mocked(self, tmp, fail=None, state='SUCCEEDED'):
+    def snapshot(self, destination, extra=(), worker=b'echo snapshot-worker\n'):
+        with tarfile.open(destination, 'w:gz') as tar:
+            entries = [('examples/light-profile.json', b'{}', tarfile.REGTYPE),
+                       ('cloud/gcp-worker.sh', worker, tarfile.REGTYPE),
+                       ('cloud/single_core.py', b'# helper\n', tarfile.REGTYPE), *extra]
+            for name, data, member_type in entries:
+                info = tarfile.TarInfo(name)
+                info.type = member_type
+                info.size = len(data) if member_type == tarfile.REGTYPE else 0
+                info.linkname = 'target' if member_type in (tarfile.SYMTYPE, tarfile.LNKTYPE) else ''
+                tar.addfile(info, io.BytesIO(data) if info.size else None)
+
+    def test_snapshot_worker_script_is_used_in_all_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / 'source.tar.gz'
+            self.snapshot(snapshot)
+            args = argparse.Namespace(profile=str(ROOT / 'cloud/profiles/light.json'),
+                project='example-project', service_account='test@example.iam.gserviceaccount.com',
+                region='us-central1', zone='us-central1-c', output=str(Path(tmp) / 'output'),
+                dry_run=True, source_archive=str(snapshot), source_sha256=hashlib.sha256(snapshot.read_bytes()).hexdigest())
+            stdout = io.StringIO()
+            with mock.patch('sys.stdout', stdout), mock.patch.object(cloud, 'make_source') as build:
+                self.assertEqual(cloud.run(args), 0)
+                build.assert_not_called()
+            for job in json.loads(stdout.getvalue())['jobs'].values():
+                script = job['taskGroups'][0]['taskSpec']['runnables'][0]['script']['text']
+                self.assertIn('echo snapshot-worker\n', script)
+                self.assertNotIn('save_failure_log()', script)
+            args.source_sha256 = '0' * 64
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                cloud.run(args)
+            self.assertFalse(Path(args.output).exists())
+
+    def test_snapshot_path_and_digest_are_required_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(profile=str(ROOT / 'cloud/profiles/light.json'),
+                project='example-project', service_account='test@example.iam.gserviceaccount.com',
+                region='us-central1', zone='us-central1-c', output=str(Path(tmp) / 'output'),
+                dry_run=True, source_archive=None, source_sha256='0' * 64)
+            with self.assertRaisesRegex(ValueError, 'must be provided together'):
+                cloud.run(args)
+            args.source_archive, args.source_sha256 = 'missing', None
+            with self.assertRaisesRegex(ValueError, 'must be provided together'):
+                cloud.run(args)
+            args.source_sha256 = 'not-a-sha256'
+            with self.assertRaisesRegex(ValueError, 'must be provided together'):
+                cloud.run(args)
+
+    def test_snapshot_rejects_unsafe_duplicate_and_missing_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'source.tar.gz'
+            bad = [('traversal', '../escape', tarfile.REGTYPE),
+                   ('absolute', '/escape', tarfile.REGTYPE),
+                   ('noncanonical', 'dir/./file', tarfile.REGTYPE),
+                   ('backslash', 'dir\\file', tarfile.REGTYPE),
+                   ('duplicate', 'cloud/gcp-worker.sh', tarfile.REGTYPE),
+                   ('symlink', 'link', tarfile.SYMTYPE),
+                   ('hardlink', 'link', tarfile.LNKTYPE),
+                   ('directory', 'folder', tarfile.DIRTYPE)]
+            for label, name, member_type in bad:
+                with self.subTest(label=label):
+                    self.snapshot(path, [(name, b'bad', member_type)])
+                    with self.assertRaisesRegex(ValueError, 'unsafe or duplicate'):
+                        cloud.validate_source_archive(path, 'examples/light-profile.json')
+            with tarfile.open(path, 'w:gz') as tar:
+                info = tarfile.TarInfo('cloud/gcp-worker.sh')
+                info.size = 1
+                tar.addfile(info, io.BytesIO(b'x'))
+            with self.assertRaisesRegex(ValueError, 'missing required'):
+                cloud.validate_source_archive(path, 'examples/light-profile.json')
+            with path.open('wb') as stream:
+                stream.truncate(cloud.MAX_SOURCE_BYTES + 1)
+            with self.assertRaisesRegex(ValueError, 'exceeds 20 MB'):
+                cloud.validate_source_archive(path, 'examples/light-profile.json')
+
+    def run_mocked(self, tmp, fail=None, state='SUCCEEDED', queue_timeout=3600):
         args = argparse.Namespace(profile=str(ROOT / 'cloud/profiles/light.json'), project='example-project',
             service_account='test@example.iam.gserviceaccount.com', region='us-central1', zone='us-central1-c',
-            output=str(Path(tmp) / 'output'), dry_run=False)
+            output=str(Path(tmp) / 'output'), dry_run=False, queue_timeout_seconds=queue_timeout)
         calls = []
-        context = {'owner': None, 'describes': {}, 'downloads': {}, 'cancelled': set()}
+        context = {'owner': None, 'describes': {}, 'downloads': {}, 'cancelled': set(), 'cancel_calls': {},
+                   'remote_jobs': {}}
         def fake_call(*argv, capture=False, check=True):
             calls.append(argv)
             command = ' '.join(argv)
-            if fail in ('submit', 'submit-accepted', 'submit-unrelated', 'submit-interrupt') and 'jobs submit' in command and '-amd ' in command:
+            if fail in ('submit', 'submit-accepted', 'submit-unrelated', 'submit-interrupt', 'submit-timeout') and 'jobs submit' in command and '-amd ' in command:
+                if fail in ('submit-accepted', 'submit-interrupt', 'submit-timeout', 'submit-unrelated'):
+                    label = 'someone-else' if fail == 'submit-unrelated' else context['owner']
+                    context['remote_jobs'][argv[4]] = {'name': argv[4], 'uid': 'uid-' + argv[4],
+                                                       'labels': {'sb-run': label}}
                 if fail == 'submit-interrupt':
                     raise KeyboardInterrupt()
+                if fail == 'submit-timeout':
+                    raise OSError('cloud subprocess timed out')
                 raise subprocess.CalledProcessError(1, argv)
+            if 'jobs submit' in command:
+                manifest = json.loads((Path(tmp) / 'output/cloud-run.json').read_text())
+                for key in ('intel', 'amd', 'arm'):
+                    if manifest['states'][key] == 'QUEUED':
+                        self.assertEqual(manifest['job_uids'][key], 'uid-' + manifest['jobs'][key])
+                context['remote_jobs'][argv[4]] = {'name': argv[4], 'uid': 'uid-' + argv[4],
+                                                   'labels': {'sb-run': context['owner']}}
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'uid': 'uid-' + argv[4]}))
+            if 'jobs list' in command:
+                return SimpleNamespace(returncode=0, stdout=json.dumps(list(context['remote_jobs'].values())))
+            if 'jobs delete' in command:
+                context['remote_jobs'].pop(argv[4], None)
+                return SimpleNamespace(returncode=0, stdout='')
             if fail == 'cleanup' and 'storage rm' in command:
                 return SimpleNamespace(returncode=1, stdout='')
             if 'jobs cancel' in command:
+                key = argv[4]
+                context['cancel_calls'][key] = context['cancel_calls'].get(key, 0) + 1
+                if '-amd ' in command and (fail == 'cancel-always' or
+                                           (fail == 'cancel-once' and context['cancel_calls'][key] == 1)):
+                    raise OSError('transient cancellation failure')
                 context['cancelled'].add(argv[4])
                 return SimpleNamespace(returncode=0, stdout='')
             if 'jobs describe' in command:
-                if fail in ('submit', 'submit-accepted', 'submit-unrelated', 'submit-interrupt') and '-amd ' in command:
-                    label = context['owner'] if fail in ('submit-accepted', 'submit-interrupt') else 'someone-else'
+                if fail in ('submit', 'submit-accepted', 'submit-unrelated', 'submit-interrupt', 'submit-timeout') and '-amd ' in command:
+                    label = context['owner'] if fail in ('submit-accepted', 'submit-interrupt', 'submit-timeout') else 'someone-else'
                     return SimpleNamespace(returncode=0, stdout=json.dumps({'labels': {'sb-run': label}}))
                 if fail in ('describe-amd', 'describe-once') and '-amd ' in command:
                     context['describes']['amd'] = context['describes'].get('amd', 0) + 1
@@ -223,11 +332,24 @@ class CloudGcpTests(unittest.TestCase):
                 canceled_state = 'CANCELLATION_IN_PROGRESS' if fail == 'cancel-stuck' else 'CANCELLED'
                 job_state = canceled_state if argv[4] in context['cancelled'] else state
                 if isinstance(state, dict):
-                    job_state = (canceled_state if argv[4] in context['cancelled'] else
-                                 next(value for key, value in state.items() if '-' + key + ' ' in command))
-                return SimpleNamespace(returncode=0, stdout=json.dumps({'status': {'state': job_state}}))
+                    key = next(key for key in state if '-' + key + ' ' in command)
+                    value = state[key]
+                    if isinstance(value, list):
+                        index = context['describes'].get(key, 0)
+                        context['describes'][key] = index + 1
+                        value = value[min(index, len(value) - 1)]
+                    job_state = canceled_state if argv[4] in context['cancelled'] else value
+                events = []
+                if job_state == 'CANCELLED':
+                    events = [{'type': 'STATUS_CHANGED', 'description':
+                               f'Job state is set from {before} to {after} for job x.'}
+                              for before, after in [('QUEUED', 'SCHEDULED'), ('SCHEDULED', 'CANCELLED')]]
+                return SimpleNamespace(returncode=0, stdout=json.dumps(
+                    {'uid': 'uid-' + argv[4], 'status': {'state': job_state, 'statusEvents': events}}))
             if 'buckets describe' in command:
-                label = context['owner'] if fail == 'create-accepted' else 'someone-else'
+                if fail == 'bucket-ownership-unknown':
+                    return SimpleNamespace(returncode=1, stdout='')
+                label = 'someone-else' if fail in ('create', 'bucket-replaced') else context['owner']
                 return SimpleNamespace(returncode=0, stdout=json.dumps({'labels': {'sb-run': label}}))
             if 'storage cp gs://' in command:
                 destination = Path(argv[4])
@@ -247,6 +369,19 @@ class CloudGcpTests(unittest.TestCase):
             path.write_bytes(b'source')
         def fake_bucket(bucket, project, region, owner):
             context['owner'] = owner
+            # Recovery information must exist even if the create succeeds but
+            # the process dies before receiving its response.
+            manifest = json.loads((Path(tmp) / 'output/cloud-run.json').read_text())
+            self.assertEqual(manifest['project'], project)
+            self.assertEqual(manifest['region'], region)
+            self.assertEqual(manifest['zone'], 'us-central1-c')
+            self.assertEqual(manifest['scratch_bucket'], bucket)
+            self.assertEqual(manifest['ownership_label'], {'sb-run': owner})
+            self.assertEqual(manifest['jobs'], {key: manifest['job_prefix'] + '-' + key
+                                                for key in ('intel', 'amd', 'arm')})
+            self.assertEqual(set(manifest['states'].values()), {'NOT_SUBMITTED'})
+            self.assertEqual(set(manifest['job_uids'].values()), {None})
+            self.assertEqual(set(manifest['ever_running'].values()), {None})
             if fail in ('create', 'create-accepted'):
                 raise subprocess.CalledProcessError(1, 'create')
         with mock.patch.object(cloud, 'call', side_effect=fake_call), mock.patch.object(cloud, 'make_source', side_effect=fake_source), \
@@ -254,7 +389,7 @@ class CloudGcpTests(unittest.TestCase):
              mock.patch.object(cloud, 'object_exists', return_value=None):
             try:
                 result = cloud.run(args)
-            except (subprocess.CalledProcessError, RuntimeError, KeyboardInterrupt) as exc:
+            except (subprocess.CalledProcessError, RuntimeError, OSError, KeyboardInterrupt) as exc:
                 result = exc
         return result, [' '.join(c) for c in calls]
 
@@ -280,10 +415,11 @@ class CloudGcpTests(unittest.TestCase):
             self.assertTrue(any('storage rm' in c for c in calls))
 
     def test_ambiguous_submission_reconciles_owner_and_interrupt(self):
-        for failure, expected in [('submit-accepted', 2), ('submit-interrupt', 2), ('submit-unrelated', 1)]:
+        for failure, expected in [('submit-accepted', 2), ('submit-interrupt', 2),
+                                  ('submit-unrelated', 1), ('submit-timeout', 2)]:
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
                 result, calls = self.run_mocked(tmp, fail=failure)
-                self.assertIsInstance(result, (subprocess.CalledProcessError, KeyboardInterrupt))
+                self.assertIsInstance(result, (subprocess.CalledProcessError, OSError, KeyboardInterrupt))
                 self.assertEqual(sum('jobs delete' in c for c in calls), expected)
                 self.assertFalse(any('storage rm' in c for c in calls))
 
@@ -300,6 +436,90 @@ class CloudGcpTests(unittest.TestCase):
             result, _ = self.run_mocked(tmp, fail='cleanup')
             self.assertIsInstance(result, RuntimeError)
             self.assertIn('Cleanup failed', str(result))
+
+    def test_replaced_or_unverifiable_bucket_is_not_deleted(self):
+        for failure in ('bucket-replaced', 'bucket-ownership-unknown'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp, \
+                 mock.patch('sys.stderr', new_callable=io.StringIO) as stderr:
+                result, calls = self.run_mocked(tmp, fail=failure)
+                self.assertIsInstance(result, RuntimeError)
+                self.assertIn('unverified bucket', str(result))
+                self.assertIn('only resources owned by this run', str(result))
+                self.assertNotIn('storage rm', stderr.getvalue())
+                self.assertTrue(any('buckets describe' in c for c in calls))
+                self.assertFalse(any('storage rm' in c for c in calls))
+                manifest = json.loads((Path(tmp) / 'output/cloud-run.json').read_text())
+                self.assertTrue(manifest['bucket_retained'])
+
+    def test_owned_job_deletion_retries_only_when_identity_is_confirmed(self):
+        common = ['--project', 'example-project', '--quiet']
+        success = SimpleNamespace(returncode=0)
+        for observation, expected, calls in (('owned', True, 2), ('absent', True, 0),
+                                             ('deleting', True, 0), ('unknown', False, 0)):
+            with self.subTest(observation=observation), \
+                 mock.patch.object(cloud, 'call', side_effect=[OSError('timed out'), success]) as call, \
+                 mock.patch.object(cloud, 'owned_job_state', return_value=observation), \
+                 mock.patch.object(cloud.time, 'sleep'):
+                self.assertEqual(cloud.delete_owned_job('job', 'us-central1', common, 'owner', 'uid'), expected)
+                self.assertEqual(call.call_count, calls)
+
+    def test_unrelated_or_replaced_job_is_never_deleted(self):
+        common = ['--project', 'example-project', '--quiet']
+        for job in ({'name': 'job', 'labels': {'sb-run': 'other'}, 'uid': 'uid'},
+                    {'name': 'job', 'labels': {'sb-run': 'owner'}, 'uid': 'replacement'}):
+            with self.subTest(job=job), \
+                 mock.patch.object(cloud, 'retry_call', return_value=SimpleNamespace(
+                     returncode=0, stdout=json.dumps([job]))), \
+                 mock.patch.object(cloud, 'call') as delete:
+                self.assertFalse(cloud.delete_owned_job('job', 'us-central1', common, 'owner', 'uid'))
+                delete.assert_not_called()
+
+    def test_job_absence_requires_successful_list_and_reused_identity_is_not_owned(self):
+        common = ['--project', 'example-project', '--quiet']
+        def state(payload, code=0):
+            result = SimpleNamespace(returncode=code, stdout=json.dumps(payload))
+            with mock.patch.object(cloud, 'retry_call', return_value=result):
+                return cloud.owned_job_state('job', 'us-central1', common, 'owner', 'uid')
+        self.assertEqual(state([]), 'absent')
+        self.assertEqual(state([], code=1), 'unknown')
+        self.assertEqual(state([{'name': 'job', 'labels': {'sb-run': 'other'}, 'uid': 'uid'}]), 'unknown')
+        self.assertEqual(state([{'name': 'job', 'labels': {'sb-run': 'owner'}, 'uid': 'other'}]), 'unknown')
+        self.assertEqual(state([{'name': 'job', 'labels': {'sb-run': 'owner'}, 'uid': 'uid'}]), 'owned')
+        self.assertEqual(state([{'name': 'job', 'labels': {'sb-run': 'owner'}, 'uid': 'uid',
+                                 'status': {'state': 'DELETION_IN_PROGRESS'}}]), 'deleting')
+
+    def test_job_list_success_with_diagnostics_is_never_treated_as_absent(self):
+        common = ['--project', 'example-project', '--quiet']
+        warning = SimpleNamespace(returncode=0, stdout='[]', stderr='WARNING: partial results; sensitive')
+        with mock.patch.object(cloud, 'call', return_value=warning) as call, \
+             mock.patch.object(cloud.time, 'sleep'), mock.patch('sys.stderr', new_callable=io.StringIO) as stderr:
+            self.assertFalse(cloud.delete_owned_job('job', 'us-central1', common, 'owner', 'uid'))
+        self.assertEqual(call.call_count, cloud.RETRIES)
+        self.assertTrue(all('list' in args.args for args in call.call_args_list))
+        self.assertEqual(stderr.getvalue(), '')
+
+    def test_job_list_retries_diagnostics_and_accepts_a_clean_result(self):
+        common = ['--project', 'example-project', '--quiet']
+        warning = SimpleNamespace(returncode=0, stdout='[]', stderr='WARNING: partial results')
+        clean = SimpleNamespace(returncode=0, stdout='[]', stderr='')
+        with mock.patch.object(cloud, 'call', side_effect=[warning, clean]) as call, \
+             mock.patch.object(cloud.time, 'sleep'):
+            self.assertEqual(cloud.owned_job_state('job', 'us-central1', common, 'owner', 'uid'), 'absent')
+        self.assertEqual(call.call_count, 2)
+
+    def test_ownership_describe_rejects_success_with_diagnostics(self):
+        warning = SimpleNamespace(returncode=0, stdout=json.dumps({'labels': {'sb-run': 'owner'}}),
+                                  stderr='WARNING: incomplete response; sensitive')
+        clean = SimpleNamespace(returncode=0, stdout=warning.stdout, stderr='')
+        with mock.patch.object(cloud, 'call', return_value=warning) as call, \
+             mock.patch.object(cloud.time, 'sleep'), mock.patch('sys.stderr', new_callable=io.StringIO) as stderr:
+            self.assertIsNone(cloud.owned_resource('gcloud', 'storage', 'buckets', 'describe', 'bucket', owner='owner'))
+        self.assertEqual(call.call_count, cloud.RETRIES)
+        self.assertEqual(stderr.getvalue(), '')
+        with mock.patch.object(cloud, 'call', side_effect=[warning, clean]) as call, \
+             mock.patch.object(cloud.time, 'sleep'):
+            self.assertTrue(cloud.owned_resource('gcloud', 'storage', 'buckets', 'describe', 'bucket', owner='owner'))
+        self.assertEqual(call.call_count, 2)
 
     def test_completed_results_survive_a_later_poll_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -373,6 +593,108 @@ class CloudGcpTests(unittest.TestCase):
             self.assertEqual(set(states.values()), {'QUEUE_TIMEOUT'})
             self.assertTrue(any('storage rm' in c for c in calls))
 
+    def test_custom_queue_deadline_and_recorded_provisioning_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            times = itertools.chain([0] * 7, itertools.repeat(61))
+            with mock.patch.object(cloud.time, 'monotonic', side_effect=times):
+                result, calls = self.run_mocked(tmp, state='SCHEDULED', queue_timeout=60)
+            self.assertEqual(result, 1)
+            self.assertEqual(sum('jobs cancel' in c for c in calls), 3)
+            state = json.loads((Path(tmp) / 'output/cloud-run.json').read_text())
+            self.assertEqual(state['queue_timeout_seconds'], 60)
+            self.assertEqual(set(state['states'].values()), {'QUEUE_TIMEOUT'})
+            self.assertEqual(set(state['ever_running'].values()), {False})
+            self.assertEqual(state['job_uids'], {key: 'uid-' + name for key, name in state['jobs'].items()})
+
+    def test_terminal_poll_after_nominal_deadline_gets_bounded_grace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # A task can begin just before the one-hour queue deadline and
+            # finish just after the nominal task-plus-queue boundary.
+            times = itertools.chain([0] * 7, [3599, 25201], itertools.repeat(25201))
+            with mock.patch.object(cloud.time, 'monotonic', side_effect=times):
+                result, _ = self.run_mocked(tmp, state={
+                    'intel': ['RUNNING', 'SUCCEEDED'], 'amd': 'SUCCEEDED', 'arm': 'SUCCEEDED'})
+            self.assertEqual(result, 0)
+            manifest = json.loads((Path(tmp) / 'output/cloud-run.json').read_text())
+            self.assertEqual(set(manifest['states'].values()), {'SUCCEEDED'})
+            self.assertTrue((Path(tmp) / 'output/intel/results.jsonl').exists())
+
+    def test_global_deadline_still_expires_after_collection_grace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            times = itertools.chain([0] * 7, itertools.repeat(25381))
+            with mock.patch.object(cloud.time, 'monotonic', side_effect=times):
+                result, _ = self.run_mocked(tmp, state='SCHEDULED')
+            self.assertIsInstance(result, RuntimeError)
+            self.assertIn('180-second collection grace', str(result))
+
+    def test_transient_cancel_error_does_not_stop_other_running_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            times = itertools.chain([0] * 7, itertools.repeat(3601))
+            with mock.patch.object(cloud.time, 'monotonic', side_effect=times):
+                result, calls = self.run_mocked(tmp, fail='cancel-once',
+                    state={'intel': ['RUNNING', 'SUCCEEDED'], 'amd': 'SCHEDULED', 'arm': 'SUCCEEDED'})
+            self.assertEqual(result, 1)
+            manifest = json.loads((Path(tmp) / 'output/cloud-run.json').read_text())
+            self.assertEqual(manifest['states'], {'intel': 'SUCCEEDED', 'amd': 'QUEUE_TIMEOUT', 'arm': 'SUCCEEDED'})
+            self.assertEqual(manifest['cancellations']['amd']['attempts'], 2)
+            self.assertTrue(manifest['cancellations']['amd']['ambiguous'])
+            self.assertTrue(manifest['cancellations']['amd']['accepted'])
+            self.assertTrue((Path(tmp) / 'output/intel/results.jsonl').exists())
+            self.assertEqual(sum('jobs cancel' in call and '-amd ' in call for call in calls), 2)
+
+    def test_job_starting_after_ambiguous_cancel_is_not_cancelled_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            times = itertools.chain([0] * 7, itertools.repeat(3601))
+            with mock.patch.object(cloud.time, 'monotonic', side_effect=times):
+                result, calls = self.run_mocked(tmp, fail='cancel-once',
+                    state={'intel': 'SUCCEEDED', 'amd': ['SCHEDULED', 'RUNNING', 'SUCCEEDED'], 'arm': 'SUCCEEDED'})
+            self.assertEqual(result, 0)
+            manifest = json.loads((Path(tmp) / 'output/cloud-run.json').read_text())
+            self.assertEqual(manifest['states']['amd'], 'SUCCEEDED')
+            self.assertTrue(manifest['ever_running']['amd'])
+            self.assertTrue(manifest['cancellations']['amd']['observed_running'])
+            self.assertEqual(sum('jobs cancel' in call and '-amd ' in call for call in calls), 1)
+
+    def test_unconfirmed_cancellation_is_bounded_and_retains_bucket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            times = itertools.chain([0] * 7, [3601] * 20, itertools.repeat(3725))
+            with mock.patch.object(cloud.time, 'monotonic', side_effect=times):
+                result, calls = self.run_mocked(tmp, fail='cancel-always',
+                    state={'intel': 'SUCCEEDED', 'amd': 'SCHEDULED', 'arm': 'SUCCEEDED'})
+            self.assertEqual(result, 1)
+            manifest = json.loads((Path(tmp) / 'output/cloud-run.json').read_text())
+            self.assertEqual(manifest['states']['amd'], 'CANCEL_TIMEOUT')
+            self.assertEqual(manifest['cancellations']['amd']['attempts'], 3)
+            self.assertTrue(manifest['bucket_retained'])
+            self.assertTrue((Path(tmp) / 'output/intel/results.jsonl').exists())
+            self.assertFalse(any('storage rm' in call for call in calls))
+
+    def test_queue_timeout_validation_happens_before_remote_actions(self):
+        for value in (0, -1, 86401, True, 0.5):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                args = argparse.Namespace(profile=str(ROOT / 'cloud/profiles/light.json'),
+                    project='example-project', service_account='test@example.iam.gserviceaccount.com',
+                    region='us-central1', zone='us-central1-c', output=str(Path(tmp) / 'output'),
+                    dry_run=False, queue_timeout_seconds=value)
+                with self.assertRaisesRegex(ValueError, 'queue_timeout_seconds'):
+                    cloud.run(args)
+                self.assertFalse(Path(args.output).exists())
+
+    def test_running_history_is_conservative(self):
+        def status(*transitions):
+            return {'statusEvents': [{'type': 'STATUS_CHANGED', 'description':
+                     f'Job state is set from {a} to {b} for job x.'} for a, b in transitions]}
+        self.assertTrue(cloud.running_observation('RUNNING', {}, None))
+        self.assertTrue(cloud.running_observation('CANCELLED', {}, True))
+        self.assertTrue(cloud.running_observation('CANCELLED', status(('QUEUED', 'RUNNING'),
+                                                                       ('RUNNING', 'CANCELLED')), None))
+        self.assertFalse(cloud.running_observation('CANCELLED', status(('QUEUED', 'SCHEDULED'),
+                                                                        ('SCHEDULED', 'CANCELLED')), None))
+        self.assertIsNone(cloud.running_observation('CANCELLED', {}, None))
+        self.assertIsNone(cloud.running_observation('CANCELLED', status(('SCHEDULED', 'CANCELLED')), None))
+        self.assertIsNone(cloud.running_observation('CANCELLED', status(('QUEUED', 'SCHEDULED'),
+                                                                         ('PENDING', 'CANCELLED')), None))
+
     def test_successful_results_are_retained_when_another_job_cannot_start(self):
         with tempfile.TemporaryDirectory() as tmp:
             times = itertools.chain([0] * 7, itertools.repeat(3601))
@@ -401,17 +723,43 @@ class CloudGcpTests(unittest.TestCase):
 
     def test_state_write_failure_does_not_prevent_cleanup(self):
         with tempfile.TemporaryDirectory() as tmp:
-            write_text = Path.write_text
-            def fail_state(path, *args, **kwargs):
-                if path.name == 'cloud-run.json':
+            write_state = cloud.write_state_atomic
+            writes = 0
+            def fail_state(path, value):
+                nonlocal writes
+                writes += 1
+                if writes > 4:  # Initial manifest and all three confirmed submissions succeed.
                     raise OSError('disk full')
-                return write_text(path, *args, **kwargs)
-            with mock.patch.object(Path, 'write_text', fail_state):
+                return write_state(path, value)
+            with mock.patch.object(cloud, 'write_state_atomic', side_effect=fail_state):
                 result, calls = self.run_mocked(tmp)
             self.assertIsInstance(result, RuntimeError)
             self.assertIn('Could not save cloud-run.json', str(result))
             self.assertEqual(sum('jobs delete' in c for c in calls), 3)
             self.assertFalse(any('storage rm' in c for c in calls))
+
+    def test_initial_manifest_failure_prevents_remote_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(profile=str(ROOT / 'cloud/profiles/light.json'),
+                project='example-project', service_account='test@example.iam.gserviceaccount.com',
+                region='us-central1', zone='us-central1-c', output=str(Path(tmp) / 'output'), dry_run=False)
+            with mock.patch.object(cloud, 'make_source', side_effect=lambda path, _: path.write_bytes(b'source')), \
+                 mock.patch.object(cloud, 'write_state_atomic', side_effect=OSError('disk full')), \
+                 mock.patch.object(cloud, 'create_bucket') as create:
+                with self.assertRaisesRegex(OSError, 'disk full'):
+                    cloud.run(args)
+                create.assert_not_called()
+
+    def test_manifest_replacement_failure_preserves_prior_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            state = folder / 'cloud-run.json'
+            state.write_text('{"old": true}\n')
+            with mock.patch.object(cloud.os, 'replace', side_effect=OSError('disk full')):
+                with self.assertRaisesRegex(OSError, 'disk full'):
+                    cloud.write_state_atomic(state, {'new': True})
+            self.assertEqual(json.loads(state.read_text()), {'old': True})
+            self.assertEqual([p.name for p in folder.iterdir()], ['cloud-run.json'])
 
     def test_deleting_job_retains_bucket_even_if_artifacts_are_absent(self):
         with tempfile.TemporaryDirectory() as tmp:
