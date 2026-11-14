@@ -105,6 +105,8 @@ The checked-in [light](cloud/profiles/light.json) and
 AMD, and Arm GCP Batch machines and return compact report inputs. Heavy targets
 200,000-row systems. See [cloud benchmark setup and cleanup](docs/cloud.md)
 for prerequisites, usage, transfer limits, and billing considerations.
+The [automated cloud launcher](docs/cloud.md#automated-launcher) can run a
+profile, retry confirmed capacity shortages, make a report, and verify cleanup.
 
 ## HTML and JSON comparison reports
 
